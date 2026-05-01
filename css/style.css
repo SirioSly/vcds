@@ -1522,9 +1522,14 @@ code {
   .topnav-center { display: none; }
   .nav-vin { display: none; }
   .dash-main { padding: 16px 14px 40px; }
+  .status-main { padding: 16px 14px 40px; }
   .stat-num { font-size: 1.8rem; }
   .modules-grid { grid-template-columns: repeat(2, 1fr); }
   .drawer { width: 100%; }
+  .health-card { flex-direction: column; gap: 24px; padding: 24px 20px; }
+  .module-search { width: 100%; }
+  .health-mini-stats { gap: 12px; }
+  .pwd-card { padding: 36px 24px 28px; }
 }
 
 /* ================================================================
