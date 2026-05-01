@@ -22,21 +22,38 @@ let chartFaultsBar = null;
 let chartTimeline  = null;
 
 // ── Boot ─────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   loadConfig();
   setupListeners();
-  if (!ghConfig || !ghConfig.token) {
+
+  // Se não há config local, tenta buscar data/config.json do repo
+  // (salvo lá automaticamente ao configurar em qualquer dispositivo)
+  if (!ghConfig?.token) {
+    try {
+      const r = await fetch('./data/config.json?_=' + Date.now());
+      if (r.ok) {
+        const remote = await r.json();
+        if (remote?.token && remote?.owner && remote?.repo) {
+          saveConfig(remote);   // salva no localStorage deste dispositivo
+        }
+      }
+    } catch { /* sem config remota ainda — segue normal */ }
+  }
+
+  if (!ghConfig?.token) {
     showConfigScreen();
-  } else {
-    showLoading('Carregando carros...');
-    loadCars().then(() => {
-      hideLoading();
-      showCarsScreen();
-    }).catch(err => {
-      hideLoading();
-      showToast('Erro ao conectar ao GitHub: ' + err.message, 'error');
-      showConfigScreen();
-    });
+    return;
+  }
+
+  showLoading('Carregando carros...');
+  try {
+    await loadCars();
+    hideLoading();
+    showCarsScreen();
+  } catch(err) {
+    hideLoading();
+    showToast('Erro ao conectar ao GitHub: ' + err.message, 'error');
+    showConfigScreen();
   }
 });
 
@@ -208,6 +225,14 @@ async function handleSaveConfig() {
   }
 
   saveConfig({ token, owner, repo, branch });
+
+  // Persiste config no GitHub para sincronizar outros dispositivos automaticamente
+  try {
+    await ghPut('data/config.json', { token, owner, repo, branch }, 'Save config (auto-sync devices)');
+  } catch(e) {
+    console.warn('Não foi possível salvar config no GitHub:', e.message);
+    // Não é fatal — o token local ainda funciona
+  }
 
   showLoading('Carregando carros...');
   try {
