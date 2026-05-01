@@ -24,12 +24,13 @@ document.addEventListener('DOMContentLoaded', () => {
   loadScans();
   setupListeners();
 
-  if (scans.length > 0) {
-    activeScanId = scans[scans.length - 1].id;
-    showDashboard(getActiveScan());
-  } else {
-    renderUploadHistory();
+  const latest = getLatestScan();
+  if (latest) {
+    // Já tem logs salvos → abre direto no dashboard com o scan mais recente
+    activeScanId = latest.id;
+    showDashboard(latest);
   }
+  // Sem logs → permanece na tela de upload (comportamento padrão do HTML)
 });
 
 // ── Event listeners ──────────────────────────────────────────────
