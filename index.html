@@ -25,7 +25,7 @@
   <div class="upload-content">
     <div class="brand">
       <div class="brand-icon">
-        <svg width="56" height="56" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
           <circle cx="28" cy="28" r="27" stroke="#5b8ef8" stroke-width="1.5" opacity="0.4"/>
           <circle cx="28" cy="28" r="20" stroke="#5b8ef8" stroke-width="1.5" opacity="0.7"/>
           <path d="M18 28 L28 14 L38 28 L28 42 Z" stroke="#5b8ef8" stroke-width="2" fill="none"/>
@@ -46,20 +46,29 @@
             <polyline points="9 15 12 12 15 15"/>
           </svg>
         </div>
-        <p class="drop-title">Arraste o log VCDS aqui</p>
-        <p class="drop-hint">Arquivo <code>.txt</code> exportado pelo VCDS</p>
+        <p class="drop-title">Arraste os logs VCDS aqui</p>
+        <p class="drop-hint">Um ou mais arquivos <code>.txt</code> exportados pelo VCDS</p>
         <div class="drop-divider"><span>ou</span></div>
-        <button class="btn-primary" id="btn-upload-select">Selecionar arquivo</button>
+        <button class="btn-primary" id="btn-upload-select">Selecionar arquivos</button>
       </div>
     </div>
 
     <div id="upload-history-section" class="upload-history-section" style="display:none">
       <h3 class="upload-history-title">Scans anteriores</h3>
       <div id="upload-history-list" class="upload-history-list"></div>
+      <div style="text-align:center;margin-top:16px">
+        <button class="btn-ghost" onclick="showStatusScreen()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+          Ver Status Atual do Carro
+        </button>
+      </div>
     </div>
   </div>
 
-  <input type="file" id="file-input" accept=".txt" style="display:none">
+  <input type="file" id="file-input" accept=".txt" multiple style="display:none">
 </div>
 
 <!-- ================================================================
@@ -80,6 +89,13 @@
       </div>
     </div>
     <div class="topnav-actions">
+      <button class="btn-ghost" onclick="showStatusScreen()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+          <polyline points="22 4 12 14.01 9 11.01"/>
+        </svg>
+        Status
+      </button>
       <button class="btn-ghost" id="btn-open-history">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
@@ -88,7 +104,7 @@
         <span class="count-badge" id="history-count">1</span>
       </button>
       <button class="btn-primary btn-sm" id="btn-new-scan">+ Novo Scan</button>
-      <input type="file" id="file-input-dash" accept=".txt" style="display:none">
+      <input type="file" id="file-input-dash" accept=".txt" multiple style="display:none">
     </div>
   </nav>
 
@@ -114,10 +130,10 @@
       </div>
     </section>
 
-    <!-- Comparison banner (shows only when 2+ scans exist) -->
+    <!-- Comparison banner -->
     <div id="comparison-banner" class="comparison-banner hidden">
       <div class="cmp-info">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;color:var(--blue)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;color:var(--blue)">
           <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
           <polyline points="17 6 23 6 23 12"/>
         </svg>
@@ -127,15 +143,9 @@
         </div>
       </div>
       <div class="cmp-deltas">
-        <span class="cmp-delta new"       id="cmp-delta-new">
-          <span id="cmp-n-new">0</span> nova(s)
-        </span>
-        <span class="cmp-delta resolved"  id="cmp-delta-resolved">
-          <span id="cmp-n-resolved">0</span> resolvida(s)
-        </span>
-        <span class="cmp-delta recurring" id="cmp-delta-recurring">
-          <span id="cmp-n-recurring">0</span> recorrente(s)
-        </span>
+        <span class="cmp-delta new"       id="cmp-delta-new"><span id="cmp-n-new">0</span> nova(s)</span>
+        <span class="cmp-delta resolved"  id="cmp-delta-resolved"><span id="cmp-n-resolved">0</span> resolvida(s)</span>
+        <span class="cmp-delta recurring" id="cmp-delta-recurring"><span id="cmp-n-recurring">0</span> recorrente(s)</span>
       </div>
     </div>
 
@@ -189,6 +199,93 @@
 </div>
 
 <!-- ================================================================
+     STATUS SCREEN
+================================================================ -->
+<div id="status-screen" class="screen hidden">
+
+  <nav class="topnav">
+    <div class="topnav-brand">
+      <button class="btn-ghost btn-sm" id="btn-back-from-status">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+        Voltar
+      </button>
+    </div>
+    <div class="topnav-center">
+      <span style="font-weight:600;font-size:0.9rem;color:var(--text)">Status Atual do Carro</span>
+    </div>
+    <div class="topnav-actions">
+      <span class="nav-vin" id="status-nav-vin"></span>
+    </div>
+  </nav>
+
+  <main class="status-main">
+
+    <!-- Health Card -->
+    <div class="health-card">
+      <div class="health-ring-wrap">
+        <svg class="health-ring" viewBox="0 0 120 120">
+          <circle class="ring-bg" cx="60" cy="60" r="52"/>
+          <circle class="ring-fg" id="ring-fg" cx="60" cy="60" r="52"/>
+        </svg>
+        <div class="health-score-center">
+          <span class="health-score-num" id="health-score-num">—</span>
+          <span class="health-score-pct" id="health-score-pct">%</span>
+        </div>
+      </div>
+      <div class="health-info">
+        <h2 class="health-car-name">Jetta TSI 2.0</h2>
+        <div class="health-vin" id="health-vin"></div>
+        <div class="health-meta" id="health-meta"></div>
+        <div class="health-mini-stats" id="health-mini-stats"></div>
+      </div>
+    </div>
+
+    <!-- Evolutions card (only 2+ scans) -->
+    <div class="card hidden" id="evolutions-card">
+      <div class="card-title">Evoluções desde o 1º Scan</div>
+      <div id="evolutions-content"></div>
+    </div>
+
+    <!-- All modules table -->
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <span>Todos os Módulos</span>
+        <input type="text" id="module-search" class="module-search"
+               placeholder="Buscar por nome ou endereço..."
+               oninput="filterModulesTable(this.value)">
+      </div>
+      <div class="modules-table-wrap">
+        <table class="modules-table">
+          <thead>
+            <tr>
+              <th>Addr</th>
+              <th>Nome</th>
+              <th>Status</th>
+              <th>Componente</th>
+              <th>Part No SW</th>
+              <th>Coding</th>
+            </tr>
+          </thead>
+          <tbody id="modules-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Active faults -->
+    <div class="card hidden" id="status-faults-card">
+      <div class="card-title">
+        Falhas Ativas
+        <span class="title-badge" id="status-faults-badge"></span>
+      </div>
+      <div id="status-faults-list" class="faults-list"></div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ================================================================
      HISTORY DRAWER
 ================================================================ -->
 <div class="overlay hidden" id="overlay" onclick="closeHistoryDrawer()"></div>
@@ -203,6 +300,29 @@
   </div>
   <div class="drawer-body" id="drawer-scan-list"></div>
 </aside>
+
+<!-- ================================================================
+     PASSWORD MODAL
+================================================================ -->
+<div id="pwd-overlay" class="pwd-overlay hidden">
+  <div class="pwd-card" id="pwd-card">
+    <div class="pwd-lock-icon">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+        <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+    </div>
+    <h2 class="pwd-title">Acesso Restrito</h2>
+    <p class="pwd-subtitle">Digite a senha para importar logs VCDS</p>
+    <input type="password" id="pwd-input" class="pwd-input"
+           placeholder="••••••••"
+           autocomplete="off"
+           onkeydown="if(event.key==='Enter') confirmPassword()">
+    <p class="pwd-error" id="pwd-error"></p>
+    <button class="btn-primary" style="width:100%" onclick="confirmPassword()">Confirmar</button>
+    <button class="pwd-cancel" onclick="cancelPassword()">Cancelar</button>
+  </div>
+</div>
 
 <script src="js/parser.js"></script>
 <script src="js/app.js"></script>
