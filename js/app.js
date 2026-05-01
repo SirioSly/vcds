@@ -1,160 +1,393 @@
 /* ================================================================
-   VCDS Dashboard — App Logic v3
-   - Senha de acesso para importar arquivos
-   - Upload múltiplo de arquivos (.txt)
-   - Tela de Status do Carro (saúde, módulos, evoluções)
-   - Engine de comparação: nova / recorrente / resolvida
-   - Detecção de duplicatas
+   VCDS Mechanic Dashboard — App Logic v4 (SaaS / Multi-car)
+   - GitHub API como banco de dados persistente (PAT auth)
+   - Multi-carro: cada carro tem scans históricos independentes
+   - Deduplicação por scanTimestamp exato
+   - Sem senha de acesso local (PAT é a autenticação)
 ================================================================ */
 
-const STORAGE_KEY     = 'vcds_jetta_scans';
-const MOD_STORAGE_KEY = 'vcds_jetta_mods';
-const AUTH_KEY        = 'vcds_auth';
-const PASSWORD        = 'siriovcds';
+// ── State ────────────────────────────────────────────────────────
+const CONFIG_KEY = 'vcds_gh_config';
 
-let scans        = [];
-let mods         = [];
+let ghConfig = null;         // { token, owner, repo, branch }
+let cars = [];               // array do data/index.json
+let activeCarId = null;
+let activeCarScans = [];     // full scan objects: { id, filename, importedAt, data }
+let activeCarMods = [];
 let activeScanId = null;
-let pendingAction = null;   // ação pendente aguardando senha
 let currentModFilter = 'Todos';
 
 let chartModules   = null;
 let chartFaultsBar = null;
 let chartTimeline  = null;
 
-// ── Bootstrap ────────────────────────────────────────────────────
+// ── Boot ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  loadScans();
-  loadMods();
+  loadConfig();
   setupListeners();
-  updateModsBadge();
-
-  const latest = getLatestScan();
-  if (latest) {
-    // Já tem logs salvos → abre direto no dashboard com o scan mais recente
-    activeScanId = latest.id;
-    showDashboard(latest);
+  if (!ghConfig || !ghConfig.token) {
+    showConfigScreen();
+  } else {
+    showLoading('Carregando carros...');
+    loadCars().then(() => {
+      hideLoading();
+      showCarsScreen();
+    }).catch(err => {
+      hideLoading();
+      showToast('Erro ao conectar ao GitHub: ' + err.message, 'error');
+      showConfigScreen();
+    });
   }
-  // Sem logs → permanece na tela de upload (comportamento padrão do HTML)
 });
 
-// ── Event listeners ──────────────────────────────────────────────
+// ── Config persistence ────────────────────────────────────────────
+function loadConfig() {
+  try {
+    const raw = localStorage.getItem(CONFIG_KEY);
+    if (raw) ghConfig = JSON.parse(raw);
+  } catch { ghConfig = null; }
+}
+
+function saveConfig(cfg) {
+  ghConfig = cfg;
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
+}
+
+// ================================================================
+//  GITHUB API LAYER
+// ================================================================
+
+async function ghGet(path) {
+  const { owner, repo, branch, token } = ghConfig;
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`;
+  const headers = { 'Accept': 'application/vnd.github+json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(url, { headers });
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.message || `HTTP ${res.status}`);
+    }
+    const json = await res.json();
+    const decoded = decodeURIComponent(escape(atob(json.content.replace(/\s/g, ''))));
+    return { data: JSON.parse(decoded), sha: json.sha };
+  } catch (e) {
+    if (e.message && e.message.includes('Not Found')) return null;
+    throw e;
+  }
+}
+
+async function ghPut(path, data, message, existingSha) {
+  const { owner, repo, branch, token } = ghConfig;
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+  const headers = {
+    'Accept': 'application/vnd.github+json',
+    'Content-Type': 'application/json'
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  // If no existing SHA provided, try to get it
+  let sha = existingSha;
+  if (!sha) {
+    const existing = await ghGet(path).catch(() => null);
+    sha = existing ? existing.sha : undefined;
+  }
+
+  const content = btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2))));
+  const body = { message, content, branch };
+  if (sha) body.sha = sha;
+
+  const res = await fetch(url, { method: 'PUT', headers, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.message || `HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  return json.content ? json.content.sha : null;
+}
+
+// ================================================================
+//  EVENT LISTENERS
+// ================================================================
+
 function setupListeners() {
-  const fileInput     = document.getElementById('file-input');
-  const fileInputDash = document.getElementById('file-input-dash');
-  const dropZone      = document.getElementById('drop-zone');
-
-  // Garante multiple via JS (backup ao atributo HTML)
-  fileInput.multiple     = true;
-  fileInputDash.multiple = true;
-
-  // Converte FileList para Array ANTES de resetar o input
-  // Evita que browsers descartem os File objects ao limpar o input
-  fileInput.addEventListener('change', e => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = '';          // reset para permitir re-selecionar o mesmo arquivo
-    if (files.length > 0) handleFiles(files);
-  });
-  fileInputDash.addEventListener('change', e => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = '';
-    if (files.length > 0) handleFiles(files);
+  // Config screen
+  document.getElementById('btn-save-config').addEventListener('click', handleSaveConfig);
+  document.getElementById('cfg-token').addEventListener('keydown', e => {
+    if (e.key === 'Enter') handleSaveConfig();
   });
 
-  document.getElementById('btn-upload-select').addEventListener('click', () =>
-    requireAuth(() => triggerInput(fileInput))
-  );
-  document.getElementById('btn-new-scan').addEventListener('click', () =>
-    requireAuth(() => triggerInput(fileInputDash))
-  );
+  // Cars screen
+  document.getElementById('btn-open-config').addEventListener('click', showConfigScreen);
+  document.getElementById('btn-show-new-car').addEventListener('click', () => {
+    document.getElementById('new-car-form').classList.remove('hidden');
+    document.getElementById('nc-client').focus();
+  });
+  document.getElementById('btn-cancel-new-car').addEventListener('click', hideNewCarForm);
+  document.getElementById('btn-cancel-new-car-2').addEventListener('click', hideNewCarForm);
+  document.getElementById('btn-create-car').addEventListener('click', handleCreateCar);
+
+  // Car screen
+  document.getElementById('btn-back-from-car').addEventListener('click', () => {
+    activeCarId = null;
+    activeCarScans = [];
+    activeCarMods = [];
+    activeScanId = null;
+    showCarsScreen();
+  });
   document.getElementById('btn-open-history').addEventListener('click', openHistoryDrawer);
   document.getElementById('btn-back-from-status').addEventListener('click', backFromStatus);
   document.getElementById('btn-back-from-mod').addEventListener('click', backFromMod);
 
-  // Drag & drop (exige senha)
-  dropZone.addEventListener('click', () => requireAuth(() => triggerInput(fileInput)));
-  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-  dropZone.addEventListener('dragleave',    () => dropZone.classList.remove('drag-over'));
-  dropZone.addEventListener('drop', e => {
-    e.preventDefault();
-    dropZone.classList.remove('drag-over');
-    const files = Array.from(e.dataTransfer.files || []).filter(f => f.name.toLowerCase().endsWith('.txt'));
-    if (files.length > 0) requireAuth(() => handleFiles(files));
+  // New scan file input
+  const fileInputCar = document.getElementById('file-input-car');
+  fileInputCar.multiple = true;
+  fileInputCar.addEventListener('change', e => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length > 0) handleFiles(files);
+  });
+  document.getElementById('btn-new-scan').addEventListener('click', () => {
+    setTimeout(() => fileInputCar.click(), 60);
   });
 }
 
-/** Abre o seletor de arquivos com pequeno delay para garantir que
- *  qualquer overlay/modal já fechou antes do diálogo abrir. */
-function triggerInput(inputEl) {
-  inputEl.multiple = true;       // reforça antes de abrir
-  setTimeout(() => inputEl.click(), 60);
+function hideNewCarForm() {
+  document.getElementById('new-car-form').classList.add('hidden');
+  document.getElementById('nc-client').value = '';
+  document.getElementById('nc-make').value   = '';
+  document.getElementById('nc-model').value  = '';
+  document.getElementById('nc-year').value   = '';
+  document.getElementById('nc-vin').value    = '';
+  document.getElementById('nc-stage').value  = 'Stock';
+  document.getElementById('nc-notes').value  = '';
 }
 
 // ================================================================
-//  AUTENTICAÇÃO POR SENHA
+//  CONFIG SCREEN
 // ================================================================
 
-function isAuthenticated() {
-  return sessionStorage.getItem(AUTH_KEY) === '1';
+async function handleSaveConfig() {
+  const token  = document.getElementById('cfg-token').value.trim();
+  const owner  = document.getElementById('cfg-owner').value.trim();
+  const repo   = document.getElementById('cfg-repo').value.trim();
+  const branch = document.getElementById('cfg-branch').value.trim() || 'main';
+  const errEl  = document.getElementById('cfg-error');
+
+  errEl.textContent = '';
+  errEl.classList.add('hidden');
+
+  if (!token) { showCfgError('O token do GitHub é obrigatório.'); return; }
+  if (!owner)  { showCfgError('O owner é obrigatório.'); return; }
+  if (!repo)   { showCfgError('O repositório é obrigatório.'); return; }
+
+  document.getElementById('btn-save-config').textContent = 'Conectando...';
+  document.getElementById('btn-save-config').disabled = true;
+
+  // Validate token by calling the repo endpoint
+  try {
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github+json'
+      }
+    });
+    if (res.status === 401) throw new Error('Token inválido ou sem permissão.');
+    if (res.status === 404) throw new Error(`Repositório "${owner}/${repo}" não encontrado.`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.message || `HTTP ${res.status}`);
+    }
+  } catch(e) {
+    showCfgError(e.message);
+    document.getElementById('btn-save-config').textContent = 'Salvar e Conectar';
+    document.getElementById('btn-save-config').disabled = false;
+    return;
+  }
+
+  saveConfig({ token, owner, repo, branch });
+
+  showLoading('Carregando carros...');
+  try {
+    await loadCars();
+    hideLoading();
+    showCarsScreen();
+  } catch(e) {
+    hideLoading();
+    showCfgError('Erro ao carregar dados: ' + e.message);
+  }
+
+  document.getElementById('btn-save-config').textContent = 'Salvar e Conectar';
+  document.getElementById('btn-save-config').disabled = false;
 }
 
-/** Garante autenticação antes de executar uma ação. */
-function requireAuth(callback) {
-  if (isAuthenticated()) { callback(); return; }
-  pendingAction = callback;
-  showPasswordModal();
+function showCfgError(msg) {
+  const el = document.getElementById('cfg-error');
+  el.textContent = msg;
+  el.classList.remove('hidden');
 }
 
-function showPasswordModal() {
-  document.getElementById('pwd-overlay').classList.remove('hidden');
-  document.getElementById('pwd-error').textContent = '';
-  document.getElementById('pwd-input').value = '';
-  setTimeout(() => document.getElementById('pwd-input').focus(), 80);
-}
+// ================================================================
+//  CARS MANAGEMENT
+// ================================================================
 
-function cancelPassword() {
-  pendingAction = null;
-  document.getElementById('pwd-overlay').classList.add('hidden');
-}
-
-function confirmPassword() {
-  const input = document.getElementById('pwd-input').value;
-  if (input === PASSWORD) {
-    sessionStorage.setItem(AUTH_KEY, '1');
-    document.getElementById('pwd-overlay').classList.add('hidden');
-    if (pendingAction) { pendingAction(); pendingAction = null; }
+async function loadCars() {
+  const result = await ghGet('data/index.json');
+  if (!result) {
+    // First run — create empty index
+    cars = [];
+    await ghPut('data/index.json', { cars: [] }, 'Initialize VCDS data store');
   } else {
-    document.getElementById('pwd-error').textContent = 'Senha incorreta. Tente novamente.';
-    document.getElementById('pwd-input').value = '';
-    document.getElementById('pwd-input').focus();
-    const card = document.getElementById('pwd-card');
-    card.classList.remove('shake');
-    void card.offsetWidth;   // reflow para reiniciar animação
-    card.classList.add('shake');
+    cars = result.data.cars || [];
+  }
+}
+
+async function saveCarsIndex() {
+  await ghPut('data/index.json', { cars }, 'Update cars index');
+}
+
+async function handleCreateCar() {
+  const clientName = document.getElementById('nc-client').value.trim();
+  if (!clientName) { showToast('Informe o nome do cliente.', 'warn'); return; }
+
+  const make  = document.getElementById('nc-make').value.trim();
+  const model = document.getElementById('nc-model').value.trim();
+  const year  = parseInt(document.getElementById('nc-year').value) || null;
+  const vin   = document.getElementById('nc-vin').value.trim().toUpperCase();
+  const stage = document.getElementById('nc-stage').value;
+  const notes = document.getElementById('nc-notes').value.trim();
+
+  const carId = 'car_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  const newCar = {
+    id: carId,
+    clientName,
+    make,
+    model,
+    year,
+    vin,
+    stage,
+    notes,
+    createdAt: Date.now(),
+    scanCount: 0,
+    lastScanDate: null,
+    lastFaults: null
+  };
+
+  showLoading('Criando carro...');
+  hideNewCarForm();
+
+  try {
+    // Create data structure in GitHub
+    await ghPut(`data/cars/${carId}/scans/index.json`, [], `Create car ${clientName} - scans index`);
+    await ghPut(`data/cars/${carId}/mods.json`, [], `Create car ${clientName} - mods`);
+
+    cars.push(newCar);
+    await saveCarsIndex();
+
+    hideLoading();
+    renderCarsScreen();
+    showToast('Carro criado!', 'ok');
+  } catch(e) {
+    hideLoading();
+    showToast('Erro ao criar carro: ' + e.message, 'error');
+  }
+}
+
+function confirmDeleteCar(carId) {
+  const car = cars.find(c => c.id === carId);
+  if (!car) return;
+  if (!confirm(`Remover "${car.clientName} — ${car.make} ${car.model}" da lista?\n\nOs arquivos no GitHub não serão apagados.`)) return;
+
+  showLoading('Removendo...');
+  cars = cars.filter(c => c.id !== carId);
+  saveCarsIndex().then(() => {
+    hideLoading();
+    renderCarsScreen();
+    showToast('Carro removido da lista.', 'warn');
+  }).catch(e => {
+    hideLoading();
+    showToast('Erro: ' + e.message, 'error');
+  });
+}
+
+// ================================================================
+//  SELECT CAR
+// ================================================================
+
+async function selectCar(carId) {
+  activeCarId = carId;
+  activeScanId = null;
+  activeCarScans = [];
+  activeCarMods = [];
+
+  showLoading('Carregando scans...');
+
+  try {
+    const [scanIdxResult, modsResult] = await Promise.all([
+      ghGet(`data/cars/${carId}/scans/index.json`),
+      ghGet(`data/cars/${carId}/mods.json`)
+    ]);
+
+    activeCarMods = modsResult ? (modsResult.data || []) : [];
+
+    const scanMetas = (scanIdxResult ? (scanIdxResult.data || []) : [])
+      .sort((a, b) => b.scanTimestamp - a.scanTimestamp)
+      .slice(0, 30);
+
+    if (scanMetas.length > 0) {
+      const fullResults = await Promise.all(
+        scanMetas.map(m => ghGet(`data/cars/${carId}/scans/${m.id}.json`))
+      );
+      activeCarScans = fullResults
+        .filter(Boolean)
+        .map(r => r.data)
+        .filter(Boolean);
+    }
+
+    // Set active scan to latest
+    if (activeCarScans.length > 0) {
+      const latest = activeCarScans.slice().sort((a, b) => b.data.scanTimestamp - a.data.scanTimestamp)[0];
+      activeScanId = latest ? latest.id : null;
+    }
+
+    hideLoading();
+    _hideAllScreens();
+    document.getElementById('car-screen').classList.remove('hidden');
+    renderCarScreen();
+  } catch(e) {
+    hideLoading();
+    showToast('Erro ao carregar: ' + e.message, 'error');
   }
 }
 
 // ================================================================
-//  MULTI-FILE HANDLING
+//  FILE IMPORT (per car)
 // ================================================================
 
 async function handleFiles(fileList) {
-  // Aceita FileList, Array de Files, ou array já filtrado
+  if (!activeCarId) { showToast('Nenhum carro selecionado.', 'warn'); return; }
   const files = Array.from(fileList).filter(f => f.name.toLowerCase().endsWith('.txt'));
   if (files.length === 0) return;
 
-  let imported = 0;
-  let skipped  = 0;
-  let invalid  = 0;
+  let imported = 0, skipped = 0, invalid = 0;
+  showLoading('Importando scans...');
 
   for (const file of files) {
-    const result = await readAndImport(file);
-    if      (result === 'ok')      imported++;
-    else if (result === 'dupe')    skipped++;
-    else if (result === 'invalid') invalid++;
+    try {
+      const result = await addScan(file);
+      if      (result === 'ok')      imported++;
+      else if (result === 'dupe')    skipped++;
+      else if (result === 'invalid') invalid++;
+    } catch(e) {
+      invalid++;
+      console.error('Import error:', e);
+    }
   }
 
-  // Feedback consolidado
+  hideLoading();
+
   const parts = [];
   if (imported > 0) parts.push(`${imported} scan${imported > 1 ? 's' : ''} importado${imported > 1 ? 's' : ''}`);
   if (skipped  > 0) parts.push(`${skipped} já existia${skipped > 1 ? 'm' : ''}`);
@@ -164,186 +397,268 @@ async function handleFiles(fileList) {
   showToast(parts.join(' · '), type);
 
   if (imported > 0) {
-    // Exibir o scan mais recente importado
-    activeScanId = scans[scans.length - 1].id;
-    showDashboard(getActiveScan());
+    const latest = getLatestScan();
+    activeScanId = latest ? latest.id : null;
+    renderCarScreen();
   }
 }
 
-function readAndImport(file) {
-  return new Promise(resolve => {
+async function addScan(file) {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = e => {
-      const raw  = e.target.result;
-      const data = parseVCDS(raw);
+    reader.onload = async e => {
+      try {
+        const raw  = e.target.result;
+        const data = parseVCDS(raw);
 
-      // Valida se parece um arquivo VCDS real
-      if (!data.vin && data.modules.length === 0) {
-        resolve('invalid');
-        return;
+        if (!data.vin && data.modules.length === 0) {
+          resolve('invalid');
+          return;
+        }
+
+        // Dedup: only reject if scanTimestamp is identical and not zero
+        const ts = data.scanTimestamp;
+        if (ts && activeCarScans.find(s => s.data.scanTimestamp === ts)) {
+          resolve('dupe');
+          return;
+        }
+
+        const scanId = 'scan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+        const importedAt = Date.now();
+        const scanObj = { id: scanId, filename: file.name, importedAt, data };
+
+        // Write full scan file
+        await ghPut(
+          `data/cars/${activeCarId}/scans/${scanId}.json`,
+          scanObj,
+          `Add scan ${file.name}`
+        );
+
+        // Update scans index
+        const scanIdxResult = await ghGet(`data/cars/${activeCarId}/scans/index.json`);
+        const scanIndex = scanIdxResult ? (scanIdxResult.data || []) : [];
+        scanIndex.push({
+          id:            scanId,
+          filename:      file.name,
+          importedAt,
+          scanDate:      data.scanDate,
+          scanTimestamp: data.scanTimestamp,
+          mileage:       data.mileage,
+          totalFaults:   data.totalFaults,
+          vin:           data.vin
+        });
+        await ghPut(
+          `data/cars/${activeCarId}/scans/index.json`,
+          scanIndex,
+          `Update scan index for car ${activeCarId}`
+        );
+
+        // Update cars index
+        const car = cars.find(c => c.id === activeCarId);
+        if (car) {
+          car.scanCount    = scanIndex.length;
+          car.lastScanDate = data.scanDate;
+          car.lastFaults   = data.totalFaults;
+          await saveCarsIndex();
+        }
+
+        // Update local state
+        activeCarScans.push(scanObj);
+
+        resolve('ok');
+      } catch(err) {
+        reject(err);
       }
-
-      // Deduplicação
-      const fp = scanFingerprint(data);
-      if (scans.find(s => scanFingerprint(s.data) === fp)) {
-        resolve('dupe');
-        return;
-      }
-
-      scans.push({ id: Date.now().toString() + Math.random(), filename: file.name, data });
-      saveScans();
-      resolve('ok');
     };
     reader.onerror = () => resolve('invalid');
     reader.readAsText(file, 'utf-8');
   });
 }
 
-function scanFingerprint(data) {
-  return `${data.vin}|${data.scanDate}|${data.mileage}`;
+// ================================================================
+//  MODS (per car)
+// ================================================================
+
+async function saveCarMods() {
+  await ghPut(
+    `data/cars/${activeCarId}/mods.json`,
+    activeCarMods,
+    `Update mods for car ${activeCarId}`
+  );
 }
 
-// ── Storage ──────────────────────────────────────────────────────
-function loadScans() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) scans = JSON.parse(raw);
-  } catch { scans = []; }
-}
+// ================================================================
+//  SCREEN MANAGEMENT
+// ================================================================
 
-function saveScans() {
-  if (scans.length > 30) scans = scans.slice(-30);
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(scans)); } catch {}
-}
-
-function deleteScan(id) {
-  scans = scans.filter(s => s.id !== id);
-  saveScans();
-  if (activeScanId === id)
-    activeScanId = scans.length > 0 ? scans[scans.length - 1].id : null;
-  if (activeScanId) {
-    renderHistoryDrawer();
-    showDashboard(getActiveScan());
-  } else {
-    closeHistoryDrawer();
-    showUploadScreen();
-  }
-}
-
-function getActiveScan()  { return scans.find(s => s.id === activeScanId); }
-function getLatestScan()  { return scans.length === 0 ? null : scans.slice().sort((a,b) => b.data.scanTimestamp - a.data.scanTimestamp)[0]; }
-function getFirstScan()   { return scans.length === 0 ? null : scans.slice().sort((a,b) => a.data.scanTimestamp - b.data.scanTimestamp)[0]; }
-
-// ── Screen management ─────────────────────────────────────────────
 function _hideAllScreens() {
-  ['upload-screen','dashboard-screen','status-screen','mod-screen']
+  ['config-screen', 'cars-screen', 'car-screen', 'status-screen', 'mod-screen']
     .forEach(id => document.getElementById(id).classList.add('hidden'));
 }
 
-function showUploadScreen() {
+function showConfigScreen() {
   _hideAllScreens();
-  document.getElementById('upload-screen').classList.remove('hidden');
-  renderUploadHistory();
+  if (ghConfig) {
+    document.getElementById('cfg-token').value  = ghConfig.token  || '';
+    document.getElementById('cfg-owner').value  = ghConfig.owner  || 'SirioSly';
+    document.getElementById('cfg-repo').value   = ghConfig.repo   || 'vcds';
+    document.getElementById('cfg-branch').value = ghConfig.branch || 'main';
+  }
+  document.getElementById('config-screen').classList.remove('hidden');
 }
 
-function showDashboard(scan) {
+function showCarsScreen() {
   _hideAllScreens();
-  document.getElementById('dashboard-screen').classList.remove('hidden');
-  renderDashboard(scan);
+  document.getElementById('cars-screen').classList.remove('hidden');
+  renderCarsScreen();
+}
+
+function showCarScreen() {
+  _hideAllScreens();
+  document.getElementById('car-screen').classList.remove('hidden');
+  renderCarScreen();
 }
 
 function showStatusScreen() {
-  if (scans.length === 0) { showToast('Nenhum scan disponível.', 'warn'); return; }
+  if (activeCarScans.length === 0) { showToast('Nenhum scan disponível.', 'warn'); return; }
   _hideAllScreens();
   document.getElementById('status-screen').classList.remove('hidden');
   renderStatusScreen();
 }
 
 function backFromStatus() {
-  if (activeScanId && getActiveScan()) showDashboard(getActiveScan());
-  else showUploadScreen();
+  _hideAllScreens();
+  document.getElementById('car-screen').classList.remove('hidden');
 }
 
-// ── Upload screen history ─────────────────────────────────────────
-function renderUploadHistory() {
-  const section = document.getElementById('upload-history-section');
-  const list    = document.getElementById('upload-history-list');
-  if (scans.length === 0) { section.style.display = 'none'; return; }
-  section.style.display = '';
-  const sorted = scans.slice().sort((a,b) => b.data.scanTimestamp - a.data.scanTimestamp);
-  list.innerHTML = sorted.map(scan => {
-    const d = scan.data;
-    const f = d.totalFaults;
-    const cls = f === 0 ? 'ok' : f <= 3 ? 'warn' : 'danger';
-    const txt = f === 0 ? 'Sem falhas' : `${f} falha${f > 1 ? 's' : ''}`;
+function showModScreen() {
+  _hideAllScreens();
+  document.getElementById('mod-screen').classList.remove('hidden');
+  renderModScreen();
+}
+
+function backFromMod() {
+  _hideAllScreens();
+  document.getElementById('car-screen').classList.remove('hidden');
+}
+
+// ================================================================
+//  LOADING OVERLAY
+// ================================================================
+
+function showLoading(msg) {
+  const el = document.getElementById('loading-overlay');
+  document.getElementById('loading-text').textContent = msg || 'Carregando...';
+  el.classList.remove('hidden');
+}
+
+function hideLoading() {
+  document.getElementById('loading-overlay').classList.add('hidden');
+}
+
+// ================================================================
+//  CARS SCREEN RENDER
+// ================================================================
+
+function renderCarsScreen() {
+  const grid  = document.getElementById('cars-grid');
+  const empty = document.getElementById('cars-empty');
+
+  if (cars.length === 0) {
+    grid.innerHTML = '';
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+
+  grid.innerHTML = cars.map(car => {
+    const initial    = (car.clientName || '?')[0].toUpperCase();
+    const displayName = [car.make, car.model].filter(Boolean).join(' ') || 'Carro';
+    const yearStr    = car.year ? ` (${car.year})` : '';
+    const faults     = car.lastFaults;
+    const faultCls   = faults === null ? '' : faults === 0 ? 'ok' : faults <= 3 ? 'warn' : 'danger';
+    const faultTxt   = faults === null ? '–' : faults === 0 ? 'Sem falhas' : `${faults} falha${faults > 1 ? 's' : ''}`;
+    const scanTxt    = car.scanCount > 0
+      ? `${car.scanCount} scan${car.scanCount > 1 ? 's' : ''} · ${car.lastScanDate || ''}`
+      : 'Nenhum scan ainda';
     return `
-      <div class="upload-history-item" onclick="selectAndShow('${scan.id}')">
-        <div>
-          <div class="scan-name">${esc(scan.filename)}</div>
-          <div class="scan-meta">${d.scanDate} · ${d.mileage ? d.mileage.toLocaleString('pt-BR') + ' km' : '–'}</div>
+      <div class="car-card" onclick="selectCar('${car.id}')">
+        <div class="car-card-header">
+          <div class="car-card-avatar">${esc(initial)}</div>
+          <div class="car-card-info">
+            <div class="car-card-name">${esc(car.clientName)}</div>
+            <div class="car-card-model">${esc(displayName)}${esc(yearStr)}</div>
+            ${car.vin ? `<div class="car-card-vin">${esc(car.vin)}</div>` : ''}
+          </div>
+          <button class="car-del-btn" onclick="event.stopPropagation();confirmDeleteCar('${car.id}')" title="Remover carro">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+              <path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
+            </svg>
+          </button>
         </div>
-        <span class="scan-badge ${cls}">${txt}</span>
+        <div class="car-card-stats">
+          ${car.stage && car.stage !== 'Stock' ? `<span class="car-stage-badge">${esc(car.stage)}</span>` : ''}
+          ${faults !== null ? `<span class="car-fault-badge ${faultCls}">${faultTxt}</span>` : ''}
+          <span class="car-scan-meta">${esc(scanTxt)}</span>
+        </div>
       </div>`;
   }).join('');
 }
 
-function selectAndShow(id) {
-  activeScanId = id;
-  showDashboard(getActiveScan());
-}
-
 // ================================================================
-//  COMPARISON ENGINE
+//  CAR SCREEN RENDER (main dashboard)
 // ================================================================
 
-function getPreviousScan(currentScan) {
-  return scans
-    .filter(s => s.id !== currentScan.id && s.data.scanTimestamp < currentScan.data.scanTimestamp)
-    .sort((a, b) => b.data.scanTimestamp - a.data.scanTimestamp)[0] || null;
+function renderCarScreen() {
+  const car = cars.find(c => c.id === activeCarId);
+  if (!car) return;
+
+  const displayName = [car.make, car.model].filter(Boolean).join(' ') || 'Carro';
+  document.getElementById('car-nav-name').textContent  = car.clientName;
+  document.getElementById('car-nav-vin').textContent   = car.vin || '';
+  const stageBadge = document.getElementById('car-nav-stage');
+  if (car.stage && car.stage !== 'Stock') {
+    stageBadge.textContent = car.stage;
+    stageBadge.style.display = '';
+  } else {
+    stageBadge.style.display = 'none';
+  }
+
+  document.getElementById('history-count').textContent = activeCarScans.length;
+  updateModsBadge();
+
+  const scan = getActiveScan();
+  if (!scan) {
+    // No scans yet
+    document.getElementById('car-nav-date').textContent = '–';
+    document.getElementById('car-nav-km').textContent   = '–';
+    document.getElementById('stat-ok').textContent          = '0';
+    document.getElementById('stat-malfunction').textContent = '0';
+    document.getElementById('stat-unreachable').textContent = '0';
+    document.getElementById('stat-faults').textContent      = '0';
+    document.getElementById('car-info-table').innerHTML     = '';
+    document.getElementById('modules-grid').innerHTML       = '<p style="color:var(--text2);padding:20px;text-align:center">Importe um scan para ver os dados.</p>';
+    document.getElementById('faults-list').innerHTML        = '';
+    document.getElementById('comparison-banner').classList.add('hidden');
+    document.getElementById('card-faults-bar').style.display = 'none';
+    document.getElementById('card-timeline').style.display   = 'none';
+    if (chartModules)   { chartModules.destroy();   chartModules   = null; }
+    if (chartFaultsBar) { chartFaultsBar.destroy(); chartFaultsBar = null; }
+    if (chartTimeline)  { chartTimeline.destroy();  chartTimeline  = null; }
+    return;
+  }
+
+  renderCarDashboard(scan);
 }
 
-function getAllFaults(data) {
-  const list = [];
-  for (const mod of data.modules)
-    for (const f of mod.faults)
-      list.push({ ...f, moduleName: mod.name, moduleAddr: mod.address });
-  return list;
-}
-
-function faultKey(f) { return `${f.moduleAddr}:${f.code}`; }
-
-function getComparison(currentScan) {
-  const prev = getPreviousScan(currentScan);
-  if (!prev) return null;
-  const curr = getAllFaults(currentScan.data);
-  const prev_ = getAllFaults(prev.data);
-  const currK = new Set(curr.map(faultKey));
-  const prevK = new Set(prev_.map(faultKey));
-  const moduleChanges = currentScan.data.modules
-    .map(cm => {
-      const pm = prev.data.modules.find(m => m.address === cm.address);
-      return pm && pm.status !== cm.status
-        ? { address: cm.address, name: cm.name, from: pm.status, to: cm.status }
-        : null;
-    }).filter(Boolean);
-  return {
-    previousScan:    prev,
-    newFaults:       curr.filter(f => !prevK.has(faultKey(f))),
-    resolvedFaults:  prev_.filter(f => !currK.has(faultKey(f))),
-    recurringFaults: curr.filter(f =>  prevK.has(faultKey(f))),
-    moduleChanges
-  };
-}
-
-// ── Main dashboard render ─────────────────────────────────────────
-function renderDashboard(scan) {
+// ── Car dashboard ─────────────────────────────────────────────────
+function renderCarDashboard(scan) {
   const d   = scan.data;
   const cmp = getComparison(scan);
 
-  document.getElementById('nav-vin').textContent  = d.vin || '';
-  document.getElementById('nav-date').textContent = d.scanDate;
-  document.getElementById('nav-km').textContent   = d.mileage ? d.mileage.toLocaleString('pt-BR') + ' km' : '';
-  document.getElementById('history-count').textContent = scans.length;
+  document.getElementById('car-nav-date').textContent = d.scanDate;
+  document.getElementById('car-nav-km').textContent   = d.mileage ? d.mileage.toLocaleString('pt-BR') + ' km' : '';
 
   const ok          = d.modules.filter(m => m.status === 'OK').length;
   const malfunction = d.modules.filter(m => m.status === 'Malfunction').length;
@@ -361,6 +676,64 @@ function renderDashboard(scan) {
   renderModulesGrid(d, cmp);
   renderFaultsList(d, cmp);
 }
+
+// ── Helpers ───────────────────────────────────────────────────────
+function getActiveScan()  { return activeCarScans.find(s => s.id === activeScanId) || null; }
+function getLatestScan()  {
+  return activeCarScans.length === 0 ? null
+    : activeCarScans.slice().sort((a, b) => b.data.scanTimestamp - a.data.scanTimestamp)[0];
+}
+function getFirstScan()   {
+  return activeCarScans.length === 0 ? null
+    : activeCarScans.slice().sort((a, b) => a.data.scanTimestamp - b.data.scanTimestamp)[0];
+}
+
+// ================================================================
+//  COMPARISON ENGINE
+// ================================================================
+
+function getPreviousScan(currentScan) {
+  return activeCarScans
+    .filter(s => s.id !== currentScan.id && s.data.scanTimestamp < currentScan.data.scanTimestamp)
+    .sort((a, b) => b.data.scanTimestamp - a.data.scanTimestamp)[0] || null;
+}
+
+function getAllFaults(data) {
+  const list = [];
+  for (const mod of data.modules)
+    for (const f of mod.faults)
+      list.push({ ...f, moduleName: mod.name, moduleAddr: mod.address });
+  return list;
+}
+
+function faultKey(f) { return `${f.moduleAddr}:${f.code}`; }
+
+function getComparison(currentScan) {
+  const prev = getPreviousScan(currentScan);
+  if (!prev) return null;
+  const curr   = getAllFaults(currentScan.data);
+  const prev_  = getAllFaults(prev.data);
+  const currK  = new Set(curr.map(faultKey));
+  const prevK  = new Set(prev_.map(faultKey));
+  const moduleChanges = currentScan.data.modules
+    .map(cm => {
+      const pm = prev.data.modules.find(m => m.address === cm.address);
+      return pm && pm.status !== cm.status
+        ? { address: cm.address, name: cm.name, from: pm.status, to: cm.status }
+        : null;
+    }).filter(Boolean);
+  return {
+    previousScan:    prev,
+    newFaults:       curr.filter(f => !prevK.has(faultKey(f))),
+    resolvedFaults:  prev_.filter(f => !currK.has(faultKey(f))),
+    recurringFaults: curr.filter(f =>  prevK.has(faultKey(f))),
+    moduleChanges
+  };
+}
+
+// ================================================================
+//  DASHBOARD RENDERS
+// ================================================================
 
 function renderComparisonBanner(cmp) {
   const banner = document.getElementById('comparison-banner');
@@ -450,9 +823,9 @@ function renderChartFaultsBar(d) {
 function renderChartTimeline() {
   if (chartTimeline) { chartTimeline.destroy(); chartTimeline = null; }
   const card = document.getElementById('card-timeline');
-  if (scans.length < 2) { card.style.display = 'none'; return; }
+  if (activeCarScans.length < 2) { card.style.display = 'none'; return; }
   card.style.display = '';
-  const sorted = scans.slice().sort((a,b) => a.data.scanTimestamp - b.data.scanTimestamp);
+  const sorted = activeCarScans.slice().sort((a, b) => a.data.scanTimestamp - b.data.scanTimestamp);
   const values = sorted.map(s => s.data.totalFaults);
   const kms    = sorted.map(s => s.data.mileage);
   const ctx = document.getElementById('chart-timeline').getContext('2d');
@@ -525,7 +898,7 @@ function renderFaultsList(d, cmp) {
     allFaults.sort((a, b) => ({ new: 0, recurring: 1 }[a._delta] ?? 2) - ({ new: 0, recurring: 1 }[b._delta] ?? 2));
   }
 
-  badge.textContent  = allFaults.length > 0 ? allFaults.length : '';
+  badge.textContent   = allFaults.length > 0 ? allFaults.length : '';
   badge.style.display = allFaults.length > 0 ? '' : 'none';
 
   if (allFaults.length === 0 && (!cmp || cmp.resolvedFaults.length === 0)) {
@@ -553,8 +926,8 @@ function renderFaultItem(f, i, delta) {
     .map(([k, v]) => `<div class="freeze-row"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join('') : '';
   const freezeBlock = hasFF
     ? `<div class="fault-body"><div class="freeze-frame-title">Freeze Frame</div><div class="freeze-table">${ffRows}</div></div>` : '';
-  const metaMod = `<span class="fault-meta-item"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>${esc(f.moduleAddr)} – ${esc(f.moduleName)}</span>`;
-  const metaKm  = f.mileage ? `<span class="fault-meta-item"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>${esc(f.mileage)}</span>` : '';
+  const metaMod  = `<span class="fault-meta-item"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>${esc(f.moduleAddr)} – ${esc(f.moduleName)}</span>`;
+  const metaKm   = f.mileage ? `<span class="fault-meta-item"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>${esc(f.mileage)}</span>` : '';
   const metaDate = f.date ? `<span class="fault-meta-item"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>${esc(f.date)}</span>` : '';
   const toggleBtn = hasFF ? `<div class="fault-toggle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></div>` : '';
 
@@ -594,7 +967,7 @@ function closeHistoryDrawer() {
 }
 function renderHistoryDrawer() {
   const list   = document.getElementById('drawer-scan-list');
-  const sorted = scans.slice().sort((a,b) => b.data.scanTimestamp - a.data.scanTimestamp);
+  const sorted = activeCarScans.slice().sort((a, b) => b.data.scanTimestamp - a.data.scanTimestamp);
   if (sorted.length === 0) {
     list.innerHTML = `<p style="color:var(--text2);font-size:.85rem;text-align:center;padding:24px">Nenhum scan salvo.</p>`;
     return;
@@ -616,7 +989,52 @@ function renderHistoryDrawer() {
 function selectScan(id) {
   activeScanId = id;
   closeHistoryDrawer();
-  showDashboard(getActiveScan());
+  renderCarScreen();
+}
+function deleteScan(id) {
+  // Removes from local state only (GitHub files stay)
+  activeCarScans = activeCarScans.filter(s => s.id !== id);
+  if (activeScanId === id) {
+    const latest = getLatestScan();
+    activeScanId = latest ? latest.id : null;
+  }
+
+  // Update scans index in GitHub
+  const scanIndex = activeCarScans.map(s => ({
+    id:            s.id,
+    filename:      s.filename,
+    importedAt:    s.importedAt,
+    scanDate:      s.data.scanDate,
+    scanTimestamp: s.data.scanTimestamp,
+    mileage:       s.data.mileage,
+    totalFaults:   s.data.totalFaults,
+    vin:           s.data.vin
+  }));
+
+  showLoading('Removendo scan...');
+  ghPut(
+    `data/cars/${activeCarId}/scans/index.json`,
+    scanIndex,
+    `Remove scan ${id}`
+  ).then(() => {
+    // Update car metadata
+    const car = cars.find(c => c.id === activeCarId);
+    if (car) {
+      car.scanCount = activeCarScans.length;
+      const latest = getLatestScan();
+      car.lastScanDate = latest ? latest.data.scanDate : null;
+      car.lastFaults   = latest ? latest.data.totalFaults : null;
+      return saveCarsIndex();
+    }
+  }).then(() => {
+    hideLoading();
+    renderHistoryDrawer();
+    renderCarScreen();
+    showToast('Scan removido.', 'warn');
+  }).catch(e => {
+    hideLoading();
+    showToast('Erro: ' + e.message, 'error');
+  });
 }
 
 // ================================================================
@@ -629,24 +1047,19 @@ function renderStatusScreen() {
   if (!latest) return;
   const d = latest.data;
 
-  // Nav VIN
-  document.getElementById('status-nav-vin').textContent = d.vin || '';
+  const car = cars.find(c => c.id === activeCarId);
+  const carName = car ? [car.make, car.model].filter(Boolean).join(' ') || car.clientName : 'Carro';
 
-  // Health score
+  document.getElementById('status-nav-vin').textContent = d.vin || '';
+  document.getElementById('health-car-name').textContent = carName;
+
   const score = calcHealthScore(d);
   renderHealthRing(score, d, latest);
-
-  // Evolutions
   renderEvolutions(latest, first);
-
-  // Modules table
   renderModulesTable(d);
-
-  // Active faults
   renderStatusFaults(d);
 }
 
-// ── Health score ──────────────────────────────────────────────────
 function calcHealthScore(data) {
   const reachable = data.modules.filter(m => m.status !== 'Cannot be reached').length;
   if (reachable === 0) return 100;
@@ -656,7 +1069,7 @@ function calcHealthScore(data) {
 }
 
 function renderHealthRing(score, d, scan) {
-  const CIRC = 2 * Math.PI * 52;  // r=52
+  const CIRC = 2 * Math.PI * 52;
   const ring  = document.getElementById('ring-fg');
   const numEl = document.getElementById('health-score-num');
   const pctEl = document.getElementById('health-score-pct');
@@ -668,7 +1081,6 @@ function renderHealthRing(score, d, scan) {
   numEl.textContent = score;
   pctEl.style.color = color;
 
-  // Info
   document.getElementById('health-vin').textContent  = d.vin || '';
   document.getElementById('health-meta').textContent =
     `Último scan: ${d.scanDate}${d.mileage ? ' · ' + d.mileage.toLocaleString('pt-BR') + ' km' : ''}`;
@@ -682,11 +1094,10 @@ function renderHealthRing(score, d, scan) {
     warn  > 0 ? `<span class="hms warn"><svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>${warn} com falha</span>` : '',
     unrch > 0 ? `<span class="hms muted"><svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>${unrch} inacessível</span>` : '',
     d.totalFaults > 0 ? `<span class="hms danger">⚑ ${d.totalFaults} código${d.totalFaults > 1 ? 's' : ''} de falha</span>` : `<span class="hms ok">✓ Sem falhas ativas</span>`,
-    `<span class="hms blue">📋 ${scans.length} scan${scans.length > 1 ? 's' : ''} registrado${scans.length > 1 ? 's' : ''}</span>`
+    `<span class="hms blue">📋 ${activeCarScans.length} scan${activeCarScans.length > 1 ? 's' : ''} registrado${activeCarScans.length > 1 ? 's' : ''}</span>`
   ].join('');
 }
 
-// ── Evolutions ────────────────────────────────────────────────────
 function renderEvolutions(latest, first) {
   const card = document.getElementById('evolutions-card');
   if (!first || first.id === latest.id) { card.classList.add('hidden'); return; }
@@ -695,10 +1106,9 @@ function renderEvolutions(latest, first) {
   const latestFaults = new Set(getAllFaults(latest.data).map(faultKey));
   const firstFaults  = new Set(getAllFaults(first.data).map(faultKey));
 
-  // Resolvidas: estavam no primeiro scan, não estão no último
   const resolved = [];
   const seenR = new Set();
-  const sortedScans = scans.slice().sort((a,b) => a.data.scanTimestamp - b.data.scanTimestamp);
+  const sortedScans = activeCarScans.slice().sort((a, b) => a.data.scanTimestamp - b.data.scanTimestamp);
   for (const scan of sortedScans.filter(s => s.id !== latest.id)) {
     for (const f of getAllFaults(scan.data)) {
       const k = faultKey(f);
@@ -709,7 +1119,6 @@ function renderEvolutions(latest, first) {
     }
   }
 
-  // Novas: não estavam no primeiro scan, estão no último
   const newSincFirst = getAllFaults(latest.data).filter(f => !firstFaults.has(faultKey(f)));
 
   let html = '';
@@ -724,10 +1133,7 @@ function renderEvolutions(latest, first) {
       <div class="evo-item">
         <div class="evo-dot resolved">✓</div>
         <div class="evo-body">
-          <div class="evo-codes">
-            <span class="evo-vag">${esc(f.code)}</span>
-            ${f.pCode ? `<span class="evo-pcode">${esc(f.pCode)}</span>` : ''}
-          </div>
+          <div class="evo-codes"><span class="evo-vag">${esc(f.code)}</span>${f.pCode ? `<span class="evo-pcode">${esc(f.pCode)}</span>` : ''}</div>
           <div class="evo-desc">${esc(f.description)}</div>
           <div class="evo-meta">${esc(f.moduleName)} · Detectada em ${esc(f.seenIn)}</div>
         </div>
@@ -745,10 +1151,7 @@ function renderEvolutions(latest, first) {
       <div class="evo-item">
         <div class="evo-dot new">+</div>
         <div class="evo-body">
-          <div class="evo-codes">
-            <span class="evo-vag">${esc(f.code)}</span>
-            ${f.pCode ? `<span class="evo-pcode">${esc(f.pCode)}</span>` : ''}
-          </div>
+          <div class="evo-codes"><span class="evo-vag">${esc(f.code)}</span>${f.pCode ? `<span class="evo-pcode">${esc(f.pCode)}</span>` : ''}</div>
           <div class="evo-desc">${esc(f.description)}</div>
           <div class="evo-meta">${esc(f.moduleName)}</div>
         </div>
@@ -757,15 +1160,11 @@ function renderEvolutions(latest, first) {
   }
 
   if (!html) {
-    html = `<p style="color:var(--ok);font-size:.85rem;text-align:center;padding:16px">
-      ✓ Nenhuma mudança de falhas desde o 1º scan.
-    </p>`;
+    html = `<p style="color:var(--ok);font-size:.85rem;text-align:center;padding:16px">✓ Nenhuma mudança de falhas desde o 1º scan.</p>`;
   }
-
   document.getElementById('evolutions-content').innerHTML = html;
 }
 
-// ── Modules table ─────────────────────────────────────────────────
 function renderModulesTable(d) {
   const tbody = document.getElementById('modules-table-body');
   tbody.innerHTML = d.modules.map(m => {
@@ -791,7 +1190,6 @@ function filterModulesTable(query) {
   });
 }
 
-// ── Status screen faults ──────────────────────────────────────────
 function renderStatusFaults(d) {
   const card  = document.getElementById('status-faults-card');
   const list  = document.getElementById('status-faults-list');
@@ -808,29 +1206,6 @@ function renderStatusFaults(d) {
 //  MODIFICAÇÕES SCREEN
 // ================================================================
 
-function loadMods() {
-  try {
-    const raw = localStorage.getItem(MOD_STORAGE_KEY);
-    if (raw) mods = JSON.parse(raw);
-  } catch { mods = []; }
-}
-
-function saveMods() {
-  try { localStorage.setItem(MOD_STORAGE_KEY, JSON.stringify(mods)); } catch {}
-}
-
-function showModScreen() {
-  _hideAllScreens();
-  document.getElementById('mod-screen').classList.remove('hidden');
-  renderModScreen();
-}
-
-function backFromMod() {
-  document.getElementById('mod-screen').classList.add('hidden');
-  if (activeScanId && getActiveScan()) showDashboard(getActiveScan());
-  else showUploadScreen();
-}
-
 function renderModScreen() {
   renderModSummary();
   renderModList();
@@ -842,7 +1217,7 @@ function openModForm(id) {
   card.classList.remove('hidden');
 
   if (id) {
-    const mod = mods.find(m => m.id === id);
+    const mod = activeCarMods.find(m => m.id === id);
     if (!mod) return;
     document.getElementById('mod-form-title').textContent = 'Editar Modificação';
     document.getElementById('mod-edit-id').value    = id;
@@ -860,7 +1235,6 @@ function openModForm(id) {
     document.getElementById('mod-title').value      = '';
     document.getElementById('mod-notes').value      = '';
   }
-
   card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -868,7 +1242,7 @@ function closeModForm() {
   document.getElementById('mod-form-card').classList.add('hidden');
 }
 
-function saveMod() {
+async function saveMod() {
   const title = document.getElementById('mod-title').value.trim();
   if (!title) {
     showToast('Preencha o título da modificação.', 'warn');
@@ -884,28 +1258,42 @@ function saveMod() {
     value:     parseFloat(document.getElementById('mod-value').value) || 0,
     title,
     notes:     document.getElementById('mod-notes').value.trim(),
-    createdAt: id ? (mods.find(m => m.id === id)?.createdAt || Date.now()) : Date.now()
+    createdAt: id ? (activeCarMods.find(m => m.id === id)?.createdAt || Date.now()) : Date.now()
   };
 
   if (id) {
-    const idx = mods.findIndex(m => m.id === id);
-    if (idx >= 0) mods[idx] = mod; else mods.push(mod);
+    const idx = activeCarMods.findIndex(m => m.id === id);
+    if (idx >= 0) activeCarMods[idx] = mod; else activeCarMods.push(mod);
   } else {
-    mods.push(mod);
+    activeCarMods.push(mod);
   }
 
-  saveMods();
-  closeModForm();
-  renderModScreen();
-  showToast(id ? 'Modificação atualizada!' : 'Modificação salva!', 'ok');
+  showLoading('Salvando...');
+  try {
+    await saveCarMods();
+    hideLoading();
+    closeModForm();
+    renderModScreen();
+    showToast(id ? 'Modificação atualizada!' : 'Modificação salva!', 'ok');
+  } catch(e) {
+    hideLoading();
+    showToast('Erro ao salvar: ' + e.message, 'error');
+  }
 }
 
-function deleteMod(id) {
+async function deleteMod(id) {
   if (!confirm('Remover esta modificação?')) return;
-  mods = mods.filter(m => m.id !== id);
-  saveMods();
-  renderModScreen();
-  showToast('Modificação removida.', 'warn');
+  activeCarMods = activeCarMods.filter(m => m.id !== id);
+  showLoading('Removendo...');
+  try {
+    await saveCarMods();
+    hideLoading();
+    renderModScreen();
+    showToast('Modificação removida.', 'warn');
+  } catch(e) {
+    hideLoading();
+    showToast('Erro: ' + e.message, 'error');
+  }
 }
 
 function filterMods(btn) {
@@ -916,12 +1304,12 @@ function filterMods(btn) {
 }
 
 function renderModSummary() {
-  const total      = mods.length;
-  const totalValue = mods.reduce((s, m) => s + (m.value || 0), 0);
-  const cats       = [...new Set(mods.map(m => m.category))].length;
+  const total      = activeCarMods.length;
+  const totalValue = activeCarMods.reduce((s, m) => s + (m.value || 0), 0);
+  const cats       = [...new Set(activeCarMods.map(m => m.category))].length;
 
   const catTotals = {};
-  for (const m of mods) catTotals[m.category] = (catTotals[m.category] || 0) + m.value;
+  for (const m of activeCarMods) catTotals[m.category] = (catTotals[m.category] || 0) + m.value;
   const topCat = Object.entries(catTotals).sort((a, b) => b[1] - a[1])[0];
 
   const el = document.getElementById('mod-summary-row');
@@ -956,7 +1344,7 @@ function renderModList() {
   const list    = document.getElementById('mod-list');
   const filters = document.getElementById('mod-filters');
 
-  if (mods.length === 0) {
+  if (activeCarMods.length === 0) {
     filters.style.display = 'none';
     list.innerHTML = `
       <div class="mod-empty">
@@ -970,7 +1358,7 @@ function renderModList() {
   filters.style.display = 'flex';
 
   const filtered = currentModFilter === 'Todos'
-    ? mods : mods.filter(m => m.category === currentModFilter);
+    ? activeCarMods : activeCarMods.filter(m => m.category === currentModFilter);
   const sorted = filtered.slice().sort((a, b) => new Date(b.date) - new Date(a.date));
 
   if (sorted.length === 0) {
@@ -1019,8 +1407,8 @@ function renderModList() {
 function updateModsBadge() {
   const badge = document.getElementById('mods-count');
   if (!badge) return;
-  if (mods.length > 0) {
-    badge.textContent  = mods.length;
+  if (activeCarMods.length > 0) {
+    badge.textContent   = activeCarMods.length;
     badge.style.display = '';
   } else {
     badge.style.display = 'none';
@@ -1039,12 +1427,13 @@ function formatBRL(value) {
 }
 
 function formatModDate(dateStr) {
-  // dateStr: YYYY-MM-DD → DD/MM/YYYY
   const [y, m, d] = dateStr.split('-');
   return `${d}/${m}/${y}`;
 }
 
-// ── Toast ─────────────────────────────────────────────────────────
+// ================================================================
+//  TOAST
+// ================================================================
 function showToast(msg, type = 'ok') {
   let el = document.getElementById('toast');
   if (!el) { el = document.createElement('div'); el.id = 'toast'; document.body.appendChild(el); }

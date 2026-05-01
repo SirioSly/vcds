@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Jetta TSI 2.0 — VCDS Dashboard</title>
+  <title>VCDS Mechanic Dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -13,16 +13,26 @@
 <body>
 
 <!-- ================================================================
-     UPLOAD SCREEN
+     LOADING OVERLAY
 ================================================================ -->
-<div id="upload-screen" class="screen">
+<div id="loading-overlay" class="loading-overlay hidden">
+  <div class="loading-inner">
+    <div class="loading-spinner"></div>
+    <div class="loading-text" id="loading-text">Carregando...</div>
+  </div>
+</div>
+
+<!-- ================================================================
+     CONFIG SCREEN
+================================================================ -->
+<div id="config-screen" class="screen">
   <div class="upload-bg">
     <div class="grid-lines"></div>
     <div class="glow-orb glow-1"></div>
     <div class="glow-orb glow-2"></div>
   </div>
 
-  <div class="upload-content">
+  <div class="config-content">
     <div class="brand">
       <div class="brand-icon">
         <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
@@ -32,60 +42,159 @@
           <path d="M23 28 L28 20 L33 28 L28 36 Z" fill="#5b8ef8" opacity="0.6"/>
         </svg>
       </div>
-      <h1 class="brand-title">Jetta TSI 2.0</h1>
-      <p class="brand-subtitle">VCDS Diagnostic Dashboard</p>
+      <h1 class="brand-title">VCDS Mechanic Dashboard</h1>
+      <p class="brand-subtitle">Conecte ao seu repositório GitHub para começar</p>
     </div>
 
-    <div class="drop-zone" id="drop-zone">
-      <div class="drop-zone-inner">
-        <div class="drop-icon">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-            <line x1="12" y1="18" x2="12" y2="12"/>
-            <polyline points="9 15 12 12 15 15"/>
-          </svg>
+    <div class="config-card">
+      <div class="card-title">Configuração do GitHub</div>
+
+      <div class="cfg-field">
+        <label class="cfg-label">GitHub Personal Access Token</label>
+        <input type="password" id="cfg-token" class="cfg-input" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" autocomplete="off">
+        <small class="cfg-hint">Precisa de permissão <code>repo</code> (leitura e escrita)</small>
+      </div>
+
+      <div class="cfg-row">
+        <div class="cfg-field">
+          <label class="cfg-label">Owner (usuário ou org)</label>
+          <input type="text" id="cfg-owner" class="cfg-input" value="SirioSly" placeholder="SirioSly">
         </div>
-        <p class="drop-title">Arraste os logs VCDS aqui</p>
-        <p class="drop-hint">Um ou mais arquivos <code>.txt</code> exportados pelo VCDS</p>
-        <div class="drop-divider"><span>ou</span></div>
-        <button class="btn-primary" id="btn-upload-select">Selecionar arquivos</button>
+        <div class="cfg-field">
+          <label class="cfg-label">Repositório</label>
+          <input type="text" id="cfg-repo" class="cfg-input" value="vcds" placeholder="vcds">
+        </div>
+        <div class="cfg-field">
+          <label class="cfg-label">Branch</label>
+          <input type="text" id="cfg-branch" class="cfg-input" value="main" placeholder="main">
+        </div>
       </div>
-    </div>
 
-    <div id="upload-history-section" class="upload-history-section" style="display:none">
-      <h3 class="upload-history-title">Scans anteriores</h3>
-      <div id="upload-history-list" class="upload-history-list"></div>
-      <div style="text-align:center;margin-top:16px">
-        <button class="btn-ghost" onclick="showStatusScreen()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-            <polyline points="22 4 12 14.01 9 11.01"/>
-          </svg>
-          Ver Status Atual do Carro
-        </button>
-      </div>
+      <p class="cfg-error hidden" id="cfg-error"></p>
+
+      <button class="btn-primary" style="width:100%;margin-top:8px" id="btn-save-config">
+        Salvar e Conectar
+      </button>
     </div>
   </div>
-
-  <input type="file" id="file-input" accept=".txt" multiple style="display:none">
 </div>
 
 <!-- ================================================================
-     DASHBOARD SCREEN
+     CARS SCREEN
 ================================================================ -->
-<div id="dashboard-screen" class="screen hidden">
+<div id="cars-screen" class="screen hidden">
 
   <nav class="topnav">
     <div class="topnav-brand">
-      <span class="nav-car">Jetta TSI 2.0</span>
-      <span class="nav-vin" id="nav-vin"></span>
+      <span class="nav-car">VCDS Mechanic</span>
+    </div>
+    <div class="topnav-center"></div>
+    <div class="topnav-actions">
+      <button class="btn-ghost btn-sm" id="btn-open-config">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        Config
+      </button>
+      <button class="btn-primary btn-sm" id="btn-show-new-car">+ Novo Carro</button>
+    </div>
+  </nav>
+
+  <main class="cars-main">
+
+    <!-- New car form -->
+    <div class="card hidden" id="new-car-form">
+      <div class="card-title" style="justify-content:space-between">
+        <span>Novo Carro</span>
+        <button class="btn-icon" id="btn-cancel-new-car">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="mod-form">
+        <div class="mod-form-row" style="grid-template-columns:1fr 1fr 1fr">
+          <div class="mod-field">
+            <label class="mod-label">Nome do Cliente *</label>
+            <input type="text" id="nc-client" class="mod-input" placeholder="Ex: João Silva">
+          </div>
+          <div class="mod-field">
+            <label class="mod-label">Marca</label>
+            <input type="text" id="nc-make" class="mod-input" placeholder="Ex: Volkswagen">
+          </div>
+          <div class="mod-field">
+            <label class="mod-label">Modelo</label>
+            <input type="text" id="nc-model" class="mod-input" placeholder="Ex: Jetta TSI 2.0">
+          </div>
+        </div>
+        <div class="mod-form-row" style="grid-template-columns:120px 1fr 140px;margin-top:12px">
+          <div class="mod-field">
+            <label class="mod-label">Ano</label>
+            <input type="number" id="nc-year" class="mod-input" placeholder="2024" min="1990" max="2099">
+          </div>
+          <div class="mod-field">
+            <label class="mod-label">VIN</label>
+            <input type="text" id="nc-vin" class="mod-input" placeholder="WVWZZZ1KZAM000000" style="font-family:var(--mono)">
+          </div>
+          <div class="mod-field">
+            <label class="mod-label">Stage</label>
+            <select id="nc-stage" class="mod-input">
+              <option value="Stock">Stock</option>
+              <option value="Stage 1">Stage 1</option>
+              <option value="Stage 2">Stage 2</option>
+              <option value="Stage 3">Stage 3</option>
+            </select>
+          </div>
+        </div>
+        <div class="mod-field" style="margin-top:12px">
+          <label class="mod-label">Notas</label>
+          <textarea id="nc-notes" class="mod-input mod-textarea" placeholder="Observações sobre o carro..."></textarea>
+        </div>
+        <div class="mod-form-actions">
+          <button class="btn-ghost" id="btn-cancel-new-car-2">Cancelar</button>
+          <button class="btn-primary" id="btn-create-car">Criar Carro</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty state -->
+    <div id="cars-empty" class="hidden">
+      <div class="mod-empty" style="padding:80px 20px">
+        <div class="mod-empty-icon">🚗</div>
+        <p>Nenhum carro cadastrado ainda</p>
+        <small>Clique em "+ Novo Carro" para começar</small>
+      </div>
+    </div>
+
+    <!-- Cars grid -->
+    <div id="cars-grid" class="cars-grid"></div>
+
+  </main>
+</div>
+
+<!-- ================================================================
+     CAR SCREEN (individual dashboard)
+================================================================ -->
+<div id="car-screen" class="screen hidden">
+
+  <nav class="topnav">
+    <div class="topnav-brand">
+      <button class="btn-ghost btn-sm" id="btn-back-from-car">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+        Voltar
+      </button>
+      <span class="nav-car" id="car-nav-name"></span>
+      <span class="nav-vin" id="car-nav-vin"></span>
+      <span class="car-stage-badge" id="car-nav-stage"></span>
     </div>
     <div class="topnav-center">
-      <div class="scan-pill">
-        <span id="nav-date"></span>
+      <div class="scan-pill" id="car-scan-pill">
+        <span id="car-nav-date">–</span>
         <span class="scan-pill-sep">·</span>
-        <span id="nav-km"></span>
+        <span id="car-nav-km">–</span>
       </div>
     </div>
     <div class="topnav-actions">
@@ -108,14 +217,14 @@
           <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
         </svg>
         Histórico
-        <span class="count-badge" id="history-count">1</span>
+        <span class="count-badge" id="history-count">0</span>
       </button>
       <button class="btn-primary btn-sm" id="btn-new-scan">+ Novo Scan</button>
-      <input type="file" id="file-input-dash" accept=".txt" multiple style="display:none">
+      <input type="file" id="file-input-car" accept=".txt" multiple style="display:none">
     </div>
   </nav>
 
-  <main class="dash-main">
+  <main id="car-main" class="dash-main">
 
     <!-- Stats -->
     <section class="stats-row">
@@ -242,7 +351,7 @@
         </div>
       </div>
       <div class="health-info">
-        <h2 class="health-car-name">Jetta TSI 2.0</h2>
+        <h2 class="health-car-name" id="health-car-name">–</h2>
         <div class="health-vin" id="health-vin"></div>
         <div class="health-meta" id="health-meta"></div>
         <div class="health-mini-stats" id="health-mini-stats"></div>
@@ -408,29 +517,6 @@
     <div id="mod-list"></div>
 
   </main>
-</div>
-
-<!-- ================================================================
-     PASSWORD MODAL
-================================================================ -->
-<div id="pwd-overlay" class="pwd-overlay hidden">
-  <div class="pwd-card" id="pwd-card">
-    <div class="pwd-lock-icon">
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-        <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-      </svg>
-    </div>
-    <h2 class="pwd-title">Acesso Restrito</h2>
-    <p class="pwd-subtitle">Digite a senha para importar logs VCDS</p>
-    <input type="password" id="pwd-input" class="pwd-input"
-           placeholder="••••••••"
-           autocomplete="off"
-           onkeydown="if(event.key==='Enter') confirmPassword()">
-    <p class="pwd-error" id="pwd-error"></p>
-    <button class="btn-primary" style="width:100%" onclick="confirmPassword()">Confirmar</button>
-    <button class="pwd-cancel" onclick="cancelPassword()">Cancelar</button>
-  </div>
 </div>
 
 <script src="js/parser.js"></script>
