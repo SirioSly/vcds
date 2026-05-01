@@ -1,12 +1,26 @@
 /**
- * VCDS Dashboard — Seed de Modificações do Jetta Stage 3
- * Cole este bloco inteiro no console do browser (F12 → Console)
- * com o site aberto. Só adiciona o que ainda não existe.
+ * VCDS Mechanic Dashboard — Seed de Modificações do Jetta Stage 3
+ * ─────────────────────────────────────────────────────────────────
+ * COMO USAR:
+ * 1. Abra o site e configure o token GitHub
+ * 2. Crie o carro "Leonardo — Jetta TSI 2.0" e selecione-o
+ * 3. Abra o console do browser (F12 → Console)
+ * 4. Cole e execute todo este bloco
+ *
+ * O script usa o estado global do app (activeCarId, activeCarMods)
+ * e grava diretamente no GitHub via ghPut — exige carro selecionado.
  */
-(function () {
-  const KEY = 'vcds_jetta_mods';
-  const existing = JSON.parse(localStorage.getItem(KEY) || '[]');
-  const seedIds  = new Set(existing.map(m => m.id));
+(async function () {
+  if (typeof activeCarId === 'undefined' || !activeCarId) {
+    console.error('❌ Nenhum carro selecionado. Abra um carro primeiro.');
+    return;
+  }
+  if (typeof ghPut === 'undefined') {
+    console.error('❌ App não carregado corretamente.');
+    return;
+  }
+
+  const seedIds = new Set((activeCarMods || []).map(m => m.id));
 
   const entries = [
     /* ── JÁ VINHA NO CARRO — Pacote na compra (julho/2025) ─────── */
@@ -97,7 +111,7 @@
       category: 'Outro',
       value: 28800,
       title: 'Demais itens do pacote na compra',
-      notes: 'Valor residual do pacote de modificações na compra (R$ 65.800 total − R$ 12.000 embreagem − R$ 25.000 mecatrônica). Cobre: turbina, escape, bico, bomba, mapas, suspensão, mola, rodas, farol, FuelTech e reparos gerais.',
+      notes: 'Valor residual do pacote de modificações (R$ 65.800 − R$ 12.000 embreagem − R$ 25.000 mecatrônica). Cobre turbina, escape, bico, bomba, mapas, suspensão, mola, rodas, farol, FuelTech e reparos gerais.',
       createdAt: new Date('2025-07-01').getTime()
     },
     /* ── PÓS-COMPRA — Setembro/2025 ─────────────────────────────── */
@@ -107,7 +121,7 @@
       category: 'Manutenção',
       value: 8880,
       title: '1ª Manutenção geral (set/2025)',
-      notes: 'Troca de óleo motor, validação DSG, inspeção da corrente de comando e demais reparos. Mecânico avaliou DSG como OK — códigos P0716/P0868/P1741 são normais para remap agressivo Stage 3.',
+      notes: 'Troca de óleo motor, validação DSG, inspeção da corrente de comando e demais reparos. Mecânico avaliou DSG como OK — códigos P0716/P0868/P1741 normais para remap agressivo Stage 3.',
       createdAt: new Date('2025-09-01').getTime()
     },
     {
@@ -116,20 +130,43 @@
       category: 'Performance',
       value: 2500,
       title: 'Remap Stage 3 — motor + câmbio',
-      notes: 'Remapeamento profissional ECU Simos 12.2 e DSG6. CVN resultante: 83EACA4C. Combustível obrigatório: Shell V-Power Podium (alta octanagem). Próxima revisão: junho/2026 (óleo motor + óleo câmbio DSG).',
+      notes: 'Remapeamento ECU Simos 12.2 e DSG6. CVN: 83EACA4C. Combustível obrigatório: Shell V-Power Podium. Próxima revisão: junho/2026 (óleo motor + óleo DSG + revisão geral).',
       createdAt: new Date('2025-09-01').getTime()
     }
   ];
 
   const toAdd = entries.filter(e => !seedIds.has(e.id));
-  const merged = [...existing, ...toAdd];
-  localStorage.setItem(KEY, JSON.stringify(merged));
+  if (toAdd.length === 0) {
+    console.log('%c✅ Todas as modificações já existem para este carro.', 'color:#22d3a0;font-weight:bold');
+    return;
+  }
 
-  const total = merged.reduce((s, m) => s + (m.value || 0), 0);
-  const fmt = v => 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  // Merge into activeCarMods
+  toAdd.forEach(m => activeCarMods.push(m));
 
-  console.log(`%c✅ ${toAdd.length} modificações adicionadas (${entries.length - toAdd.length} já existiam)`, 'color:#22d3a0;font-weight:bold');
-  console.log(`%c💰 Total investido: ${fmt(total)}`, 'color:#5b8ef8;font-weight:bold');
-  console.log('Recarregando...');
-  setTimeout(() => location.reload(), 800);
+  console.log(`%c⏳ Salvando ${toAdd.length} modificações no GitHub...`, 'color:#5b8ef8');
+  try {
+    await ghPut(
+      `data/cars/${activeCarId}/mods.json`,
+      activeCarMods,
+      `Seed ${toAdd.length} mods for Jetta Stage 3`
+    );
+
+    const total = activeCarMods.reduce((s, m) => s + (m.value || 0), 0);
+    const fmt = v => 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+
+    console.log(`%c✅ ${toAdd.length} modificações adicionadas com sucesso!`, 'color:#22d3a0;font-weight:bold;font-size:14px');
+    console.log(`%c💰 Total investido: ${fmt(total)}`, 'color:#5b8ef8;font-weight:bold');
+
+    // Refresh UI
+    if (typeof renderModScreen === 'function') {
+      renderModScreen();
+      updateModsBadge();
+    }
+    if (typeof showToast === 'function') showToast(`${toAdd.length} modificações importadas!`, 'ok');
+
+    console.log('Abra a tela Modificações para ver os dados.');
+  } catch(e) {
+    console.error('❌ Erro ao salvar:', e.message);
+  }
 })();
