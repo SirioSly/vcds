@@ -7,13 +7,16 @@
    - Detecção de duplicatas
 ================================================================ */
 
-const STORAGE_KEY = 'vcds_jetta_scans';
-const AUTH_KEY    = 'vcds_auth';
-const PASSWORD    = 'siriovcds';
+const STORAGE_KEY     = 'vcds_jetta_scans';
+const MOD_STORAGE_KEY = 'vcds_jetta_mods';
+const AUTH_KEY        = 'vcds_auth';
+const PASSWORD        = 'siriovcds';
 
 let scans        = [];
+let mods         = [];
 let activeScanId = null;
 let pendingAction = null;   // ação pendente aguardando senha
+let currentModFilter = 'Todos';
 
 let chartModules   = null;
 let chartFaultsBar = null;
@@ -22,7 +25,9 @@ let chartTimeline  = null;
 // ── Bootstrap ────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadScans();
+  loadMods();
   setupListeners();
+  updateModsBadge();
 
   const latest = getLatestScan();
   if (latest) {
@@ -64,6 +69,7 @@ function setupListeners() {
   );
   document.getElementById('btn-open-history').addEventListener('click', openHistoryDrawer);
   document.getElementById('btn-back-from-status').addEventListener('click', backFromStatus);
+  document.getElementById('btn-back-from-mod').addEventListener('click', backFromMod);
 
   // Drag & drop (exige senha)
   dropZone.addEventListener('click', () => requireAuth(() => triggerInput(fileInput)));
@@ -229,24 +235,26 @@ function getLatestScan()  { return scans.length === 0 ? null : scans.slice().sor
 function getFirstScan()   { return scans.length === 0 ? null : scans.slice().sort((a,b) => a.data.scanTimestamp - b.data.scanTimestamp)[0]; }
 
 // ── Screen management ─────────────────────────────────────────────
+function _hideAllScreens() {
+  ['upload-screen','dashboard-screen','status-screen','mod-screen']
+    .forEach(id => document.getElementById(id).classList.add('hidden'));
+}
+
 function showUploadScreen() {
+  _hideAllScreens();
   document.getElementById('upload-screen').classList.remove('hidden');
-  document.getElementById('dashboard-screen').classList.add('hidden');
-  document.getElementById('status-screen').classList.add('hidden');
   renderUploadHistory();
 }
 
 function showDashboard(scan) {
-  document.getElementById('upload-screen').classList.add('hidden');
+  _hideAllScreens();
   document.getElementById('dashboard-screen').classList.remove('hidden');
-  document.getElementById('status-screen').classList.add('hidden');
   renderDashboard(scan);
 }
 
 function showStatusScreen() {
   if (scans.length === 0) { showToast('Nenhum scan disponível.', 'warn'); return; }
-  document.getElementById('upload-screen').classList.add('hidden');
-  document.getElementById('dashboard-screen').classList.add('hidden');
+  _hideAllScreens();
   document.getElementById('status-screen').classList.remove('hidden');
   renderStatusScreen();
 }
@@ -794,6 +802,246 @@ function renderStatusFaults(d) {
   card.classList.remove('hidden');
   badge.textContent = faults.length;
   list.innerHTML = faults.map((f, i) => renderFaultItem(f, 'sf-' + i, null)).join('');
+}
+
+// ================================================================
+//  MODIFICAÇÕES SCREEN
+// ================================================================
+
+function loadMods() {
+  try {
+    const raw = localStorage.getItem(MOD_STORAGE_KEY);
+    if (raw) mods = JSON.parse(raw);
+  } catch { mods = []; }
+}
+
+function saveMods() {
+  try { localStorage.setItem(MOD_STORAGE_KEY, JSON.stringify(mods)); } catch {}
+}
+
+function showModScreen() {
+  _hideAllScreens();
+  document.getElementById('mod-screen').classList.remove('hidden');
+  renderModScreen();
+}
+
+function backFromMod() {
+  document.getElementById('mod-screen').classList.add('hidden');
+  if (activeScanId && getActiveScan()) showDashboard(getActiveScan());
+  else showUploadScreen();
+}
+
+function renderModScreen() {
+  renderModSummary();
+  renderModList();
+  updateModsBadge();
+}
+
+function openModForm(id) {
+  const card = document.getElementById('mod-form-card');
+  card.classList.remove('hidden');
+
+  if (id) {
+    const mod = mods.find(m => m.id === id);
+    if (!mod) return;
+    document.getElementById('mod-form-title').textContent = 'Editar Modificação';
+    document.getElementById('mod-edit-id').value    = id;
+    document.getElementById('mod-date').value       = mod.date;
+    document.getElementById('mod-category').value   = mod.category;
+    document.getElementById('mod-value').value      = mod.value || '';
+    document.getElementById('mod-title').value      = mod.title;
+    document.getElementById('mod-notes').value      = mod.notes || '';
+  } else {
+    document.getElementById('mod-form-title').textContent = 'Nova Modificação';
+    document.getElementById('mod-edit-id').value    = '';
+    document.getElementById('mod-date').value       = new Date().toISOString().slice(0, 10);
+    document.getElementById('mod-category').value   = 'Manutenção';
+    document.getElementById('mod-value').value      = '';
+    document.getElementById('mod-title').value      = '';
+    document.getElementById('mod-notes').value      = '';
+  }
+
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeModForm() {
+  document.getElementById('mod-form-card').classList.add('hidden');
+}
+
+function saveMod() {
+  const title = document.getElementById('mod-title').value.trim();
+  if (!title) {
+    showToast('Preencha o título da modificação.', 'warn');
+    document.getElementById('mod-title').focus();
+    return;
+  }
+
+  const id = document.getElementById('mod-edit-id').value;
+  const mod = {
+    id:        id || (Date.now().toString() + Math.random()),
+    date:      document.getElementById('mod-date').value || new Date().toISOString().slice(0, 10),
+    category:  document.getElementById('mod-category').value,
+    value:     parseFloat(document.getElementById('mod-value').value) || 0,
+    title,
+    notes:     document.getElementById('mod-notes').value.trim(),
+    createdAt: id ? (mods.find(m => m.id === id)?.createdAt || Date.now()) : Date.now()
+  };
+
+  if (id) {
+    const idx = mods.findIndex(m => m.id === id);
+    if (idx >= 0) mods[idx] = mod; else mods.push(mod);
+  } else {
+    mods.push(mod);
+  }
+
+  saveMods();
+  closeModForm();
+  renderModScreen();
+  showToast(id ? 'Modificação atualizada!' : 'Modificação salva!', 'ok');
+}
+
+function deleteMod(id) {
+  if (!confirm('Remover esta modificação?')) return;
+  mods = mods.filter(m => m.id !== id);
+  saveMods();
+  renderModScreen();
+  showToast('Modificação removida.', 'warn');
+}
+
+function filterMods(btn) {
+  document.querySelectorAll('.mod-filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentModFilter = btn.dataset.cat;
+  renderModList();
+}
+
+function renderModSummary() {
+  const total      = mods.length;
+  const totalValue = mods.reduce((s, m) => s + (m.value || 0), 0);
+  const cats       = [...new Set(mods.map(m => m.category))].length;
+
+  const catTotals = {};
+  for (const m of mods) catTotals[m.category] = (catTotals[m.category] || 0) + m.value;
+  const topCat = Object.entries(catTotals).sort((a, b) => b[1] - a[1])[0];
+
+  const el = document.getElementById('mod-summary-row');
+  if (total === 0) { el.innerHTML = ''; return; }
+
+  el.innerHTML = `
+    <div class="mod-summary-card">
+      <div class="mod-summary-icon">🔧</div>
+      <div class="mod-summary-label">Modificações</div>
+      <div class="mod-summary-value blue">${total}</div>
+    </div>
+    <div class="mod-summary-card">
+      <div class="mod-summary-icon">💰</div>
+      <div class="mod-summary-label">Total Investido</div>
+      <div class="mod-summary-value green">${formatBRL(totalValue)}</div>
+    </div>
+    <div class="mod-summary-card">
+      <div class="mod-summary-icon">📂</div>
+      <div class="mod-summary-label">Categorias</div>
+      <div class="mod-summary-value">${cats}</div>
+    </div>
+    ${topCat ? `
+    <div class="mod-summary-card">
+      <div class="mod-summary-icon">${catIcon(topCat[0])}</div>
+      <div class="mod-summary-label">Maior Gasto</div>
+      <div class="mod-summary-value warn">${esc(topCat[0])}</div>
+    </div>` : ''}
+  `;
+}
+
+function renderModList() {
+  const list    = document.getElementById('mod-list');
+  const filters = document.getElementById('mod-filters');
+
+  if (mods.length === 0) {
+    filters.style.display = 'none';
+    list.innerHTML = `
+      <div class="mod-empty">
+        <div class="mod-empty-icon">🔧</div>
+        <p>Nenhuma modificação registrada ainda</p>
+        <small>Clique em "+ Adicionar" para começar a registrar</small>
+      </div>`;
+    return;
+  }
+
+  filters.style.display = 'flex';
+
+  const filtered = currentModFilter === 'Todos'
+    ? mods : mods.filter(m => m.category === currentModFilter);
+  const sorted = filtered.slice().sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  if (sorted.length === 0) {
+    list.innerHTML = `
+      <div class="mod-empty">
+        <div class="mod-empty-icon">🔍</div>
+        <p>Nenhuma modificação nesta categoria</p>
+      </div>`;
+    return;
+  }
+
+  list.innerHTML = sorted.map(mod => {
+    const icon     = catIcon(mod.category);
+    const dateStr  = mod.date ? formatModDate(mod.date) : '–';
+    const valueStr = mod.value > 0 ? formatBRL(mod.value) : '–';
+    const valCls   = mod.value > 0 ? '' : ' zero';
+    return `
+      <div class="mod-item">
+        <div class="mod-item-cat-icon">${icon}</div>
+        <div class="mod-item-body">
+          <div class="mod-item-title">${esc(mod.title)}</div>
+          <div class="mod-item-meta">
+            <span class="mod-item-date">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="4" width="18" height="18" rx="2"/>
+                <line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>
+                <line x1="3" y1="10" x2="21" y2="10"/>
+              </svg>
+              ${dateStr}
+            </span>
+            <span class="mod-item-cat">${esc(mod.category)}</span>
+          </div>
+          ${mod.notes ? `<div class="mod-item-notes">${esc(mod.notes)}</div>` : ''}
+        </div>
+        <div class="mod-item-right">
+          <div class="mod-item-value${valCls}">${valueStr}</div>
+          <div class="mod-item-actions">
+            <button class="mod-act-btn" onclick="openModForm('${mod.id}')">Editar</button>
+            <button class="mod-act-btn del" onclick="deleteMod('${mod.id}')">Remover</button>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function updateModsBadge() {
+  const badge = document.getElementById('mods-count');
+  if (!badge) return;
+  if (mods.length > 0) {
+    badge.textContent  = mods.length;
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+// ── Mod helpers ───────────────────────────────────────────────────
+function catIcon(cat) {
+  return { Performance:'⚡', Motor:'🔧', Suspensão:'🛞', Freios:'🔴',
+           Elétrica:'💡', Estética:'✨', Manutenção:'🔩',
+           Diagnóstico:'📋', Outro:'📦' }[cat] || '📦';
+}
+
+function formatBRL(value) {
+  return 'R$ ' + Number(value).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatModDate(dateStr) {
+  // dateStr: YYYY-MM-DD → DD/MM/YYYY
+  const [y, m, d] = dateStr.split('-');
+  return `${d}/${m}/${y}`;
 }
 
 // ── Toast ─────────────────────────────────────────────────────────

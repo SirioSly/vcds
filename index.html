@@ -96,6 +96,13 @@
         </svg>
         Status
       </button>
+      <button class="btn-ghost" onclick="showModScreen()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+        </svg>
+        Modificações
+        <span class="count-badge" id="mods-count" style="display:none"></span>
+      </button>
       <button class="btn-ghost" id="btn-open-history">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
@@ -300,6 +307,108 @@
   </div>
   <div class="drawer-body" id="drawer-scan-list"></div>
 </aside>
+
+<!-- ================================================================
+     MODIFICAÇÕES SCREEN
+================================================================ -->
+<div id="mod-screen" class="screen hidden">
+
+  <nav class="topnav">
+    <div class="topnav-brand">
+      <button class="btn-ghost btn-sm" id="btn-back-from-mod">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+        Voltar
+      </button>
+    </div>
+    <div class="topnav-center">
+      <span style="font-weight:600;font-size:0.9rem;color:var(--text)">Modificações do Carro</span>
+    </div>
+    <div class="topnav-actions">
+      <button class="btn-primary btn-sm" onclick="openModForm()">+ Adicionar</button>
+    </div>
+  </nav>
+
+  <main class="mod-main">
+
+    <!-- Resumo financeiro -->
+    <div class="mod-summary-row" id="mod-summary-row"></div>
+
+    <!-- Formulário (colapsável) -->
+    <div class="card hidden" id="mod-form-card">
+      <div class="card-title" style="justify-content:space-between">
+        <span id="mod-form-title">Nova Modificação</span>
+        <button class="btn-icon" onclick="closeModForm()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="mod-form">
+        <input type="hidden" id="mod-edit-id">
+
+        <div class="mod-form-row">
+          <div class="mod-field">
+            <label class="mod-label">Data</label>
+            <input type="date" id="mod-date" class="mod-input">
+          </div>
+          <div class="mod-field">
+            <label class="mod-label">Categoria</label>
+            <select id="mod-category" class="mod-input">
+              <option value="Performance">⚡ Performance</option>
+              <option value="Motor">🔧 Motor</option>
+              <option value="Suspensão">🛞 Suspensão</option>
+              <option value="Freios">🔴 Freios</option>
+              <option value="Elétrica">💡 Elétrica</option>
+              <option value="Estética">✨ Estética</option>
+              <option value="Manutenção">🔩 Manutenção</option>
+              <option value="Diagnóstico">📋 Diagnóstico</option>
+              <option value="Outro">📦 Outro</option>
+            </select>
+          </div>
+          <div class="mod-field">
+            <label class="mod-label">Valor gasto (R$)</label>
+            <input type="number" id="mod-value" class="mod-input" placeholder="0,00" min="0" step="0.01">
+          </div>
+        </div>
+
+        <div class="mod-field" style="margin-top:12px">
+          <label class="mod-label">Título / O que foi feito</label>
+          <input type="text" id="mod-title" class="mod-input" placeholder="Ex: Troca do filtro de ar esportivo">
+        </div>
+
+        <div class="mod-field" style="margin-top:12px">
+          <label class="mod-label">Observações (opcional)</label>
+          <textarea id="mod-notes" class="mod-input mod-textarea" placeholder="Marca, número de peça, oficina, resultado..."></textarea>
+        </div>
+
+        <div class="mod-form-actions">
+          <button class="btn-ghost" onclick="closeModForm()">Cancelar</button>
+          <button class="btn-primary" onclick="saveMod()">Salvar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filtros -->
+    <div class="mod-filters" id="mod-filters" style="display:none">
+      <button class="mod-filter-btn active" data-cat="Todos" onclick="filterMods(this)">Todos</button>
+      <button class="mod-filter-btn" data-cat="Performance"  onclick="filterMods(this)">⚡ Performance</button>
+      <button class="mod-filter-btn" data-cat="Motor"        onclick="filterMods(this)">🔧 Motor</button>
+      <button class="mod-filter-btn" data-cat="Suspensão"    onclick="filterMods(this)">🛞 Suspensão</button>
+      <button class="mod-filter-btn" data-cat="Freios"       onclick="filterMods(this)">🔴 Freios</button>
+      <button class="mod-filter-btn" data-cat="Elétrica"     onclick="filterMods(this)">💡 Elétrica</button>
+      <button class="mod-filter-btn" data-cat="Estética"     onclick="filterMods(this)">✨ Estética</button>
+      <button class="mod-filter-btn" data-cat="Manutenção"   onclick="filterMods(this)">🔩 Manutenção</button>
+      <button class="mod-filter-btn" data-cat="Diagnóstico"  onclick="filterMods(this)">📋 Diagnóstico</button>
+      <button class="mod-filter-btn" data-cat="Outro"        onclick="filterMods(this)">📦 Outro</button>
+    </div>
+
+    <!-- Lista de modificações -->
+    <div id="mod-list"></div>
+
+  </main>
+</div>
 
 <!-- ================================================================
      PASSWORD MODAL
