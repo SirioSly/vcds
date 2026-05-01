@@ -730,7 +730,6 @@ code {
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--text);
-  margin-bottom: 4px;
   line-height: 1.4;
 }
 
@@ -936,6 +935,184 @@ code {
   transition: all 0.15s ease;
 }
 .dsi-del:hover { color: var(--danger); background: var(--danger-dim); }
+
+/* ================================================================
+   COMPARISON BANNER
+================================================================ */
+.comparison-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--card);
+  border: 1px solid var(--blue);
+  border-radius: var(--r-lg);
+  padding: 14px 20px;
+  box-shadow: 0 0 24px var(--blue-glow);
+  flex-wrap: wrap;
+}
+
+.cmp-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cmp-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cmp-prev {
+  font-size: 0.78rem;
+  color: var(--text2);
+  margin-top: 1px;
+  font-family: var(--mono);
+}
+
+.cmp-deltas {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cmp-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 20px;
+}
+
+.cmp-delta.new       { background: var(--danger-dim); color: var(--danger); border: 1px solid rgba(239,68,68,0.25); }
+.cmp-delta.resolved  { background: var(--ok-dim);     color: var(--ok);     border: 1px solid rgba(34,211,160,0.25); }
+.cmp-delta.recurring { background: var(--warn-dim);   color: var(--warn);   border: 1px solid rgba(245,158,11,0.25); }
+
+/* ================================================================
+   FAULT DELTA BADGES  (inline, next to fault title)
+================================================================ */
+.fault-desc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.fault-desc-row .fault-desc { margin-bottom: 0; }
+
+.fault-delta {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.fault-delta.new       { background: var(--danger-dim); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
+.fault-delta.recurring { background: var(--warn-dim);   color: var(--warn);   border: 1px solid rgba(245,158,11,0.3); }
+.fault-delta.resolved  { background: var(--ok-dim);     color: var(--ok);     border: 1px solid rgba(34,211,160,0.3); }
+
+/* Fault frequency badge */
+.fault-freq {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--text2);
+  background: var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+/* Resolved fault items — dimmed with strikethrough on description */
+.fault-item.resolved {
+  opacity: 0.55;
+}
+.fault-item.resolved .fault-desc {
+  text-decoration: line-through;
+  color: var(--text2);
+}
+.fault-item.resolved .fault-id {
+  background: var(--ok-dim);
+  color: var(--ok);
+}
+
+/* Resolved section separator */
+.resolved-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ok);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 16px 4px 8px;
+  border-top: 1px solid var(--border);
+  margin-top: 6px;
+}
+
+.resolved-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--ok-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+}
+
+/* ================================================================
+   MODULE CHANGE BADGES
+================================================================ */
+.module-change-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  align-self: flex-start;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.module-change-badge.worse   { background: var(--danger-dim); color: var(--danger); }
+.module-change-badge.better  { background: var(--ok-dim);     color: var(--ok); }
+.module-change-badge.changed { background: var(--warn-dim);   color: var(--warn); }
+
+/* ================================================================
+   TOAST NOTIFICATION
+================================================================ */
+.toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%) translateY(80px);
+  background: var(--card);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 10px 20px;
+  border-radius: 30px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  z-index: 999;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease;
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.toast.show {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+.toast.toast-ok    { border-color: var(--ok);     box-shadow: 0 8px 32px var(--ok-glow); }
+.toast.toast-warn  { border-color: var(--warn);   box-shadow: 0 8px 32px var(--warn-glow); }
+.toast.toast-error { border-color: var(--danger); box-shadow: 0 8px 32px var(--danger-glow); }
 
 /* ================================================================
    RESPONSIVE

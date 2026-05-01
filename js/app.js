@@ -1,12 +1,15 @@
 /* ================================================================
-   VCDS Dashboard — App Logic
+   VCDS Dashboard — App Logic v2
+   - Comparison engine: new / recurring / resolved faults between scans
+   - Duplicate scan detection
+   - Module status delta between scans
 ================================================================ */
 
 const STORAGE_KEY = 'vcds_jetta_scans';
-let scans        = [];   // all stored scans (parsed)
-let activeScanId = null; // currently displayed
+let scans        = [];   // all stored scans (parsed + metadata)
+let activeScanId = null; // currently displayed scan id
 
-let chartModules  = null;
+let chartModules   = null;
 let chartFaultsBar = null;
 let chartTimeline  = null;
 
@@ -28,49 +31,73 @@ function setupListeners() {
   const fileInput     = document.getElementById('file-input');
   const fileInputDash = document.getElementById('file-input-dash');
   const dropZone      = document.getElementById('drop-zone');
-  const btnUpload     = document.getElementById('btn-upload-select');
-  const btnNewScan    = document.getElementById('btn-new-scan');
-  const btnHistory    = document.getElementById('btn-open-history');
 
   fileInput.addEventListener('change',     e => handleFile(e.target.files[0]));
   fileInputDash.addEventListener('change', e => handleFile(e.target.files[0]));
-  btnUpload.addEventListener('click',  () => fileInput.click());
-  btnNewScan.addEventListener('click', () => {
-    fileInputDash.value = '';
-    fileInputDash.click();
-  });
-  btnHistory.addEventListener('click', openHistoryDrawer);
 
-  // Drop zone
-  dropZone.addEventListener('click', () => fileInput.click());
-  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-  dropZone.addEventListener('dragleave',  () => dropZone.classList.remove('drag-over'));
+  document.getElementById('btn-upload-select')
+    .addEventListener('click', () => fileInput.click());
+
+  document.getElementById('btn-new-scan')
+    .addEventListener('click', () => { fileInputDash.value = ''; fileInputDash.click(); });
+
+  document.getElementById('btn-open-history')
+    .addEventListener('click', openHistoryDrawer);
+
+  dropZone.addEventListener('click',    () => fileInput.click());
+  dropZone.addEventListener('dragover', e  => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave',    () => dropZone.classList.remove('drag-over'));
   dropZone.addEventListener('drop', e => {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
     const file = e.dataTransfer.files[0];
-    if (file && file.name.endsWith('.txt')) handleFile(file);
+    if (file && file.name.toLowerCase().endsWith('.txt')) handleFile(file);
   });
 }
 
 // ── File handling ────────────────────────────────────────────────
 function handleFile(file) {
   if (!file) return;
+
   const reader = new FileReader();
   reader.onload = e => {
     const raw  = e.target.result;
     const data = parseVCDS(raw);
+
+    // ── Duplicate detection: same VIN + same scan date + same mileage
+    const fp = scanFingerprint(data);
+    const dupe = scans.find(s => scanFingerprint(s.data) === fp);
+    if (dupe) {
+      showToast('Este scan já foi importado anteriormente.', 'warn');
+      activeScanId = dupe.id;
+      showDashboard(dupe);
+      return;
+    }
+
+    // ── Sanity: check if it looks like a VCDS file
+    if (!data.vin && data.modules.length === 0) {
+      showToast('Arquivo não reconhecido como log VCDS.', 'error');
+      return;
+    }
+
     const scan = {
       id:       Date.now().toString(),
       filename: file.name,
       data
     };
+
     scans.push(scan);
     saveScans();
     activeScanId = scan.id;
     showDashboard(scan);
+    showToast('Scan importado com sucesso!', 'ok');
   };
-  reader.readAsText(file);
+  reader.readAsText(file, 'utf-8');
+}
+
+/** Fingerprint to detect duplicate uploads */
+function scanFingerprint(data) {
+  return `${data.vin}|${data.scanDate}|${data.mileage}`;
 }
 
 // ── Storage ──────────────────────────────────────────────────────
@@ -82,8 +109,7 @@ function loadScans() {
 }
 
 function saveScans() {
-  // Keep at most 20 scans
-  if (scans.length > 20) scans = scans.slice(-20);
+  if (scans.length > 30) scans = scans.slice(-30);
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(scans)); } catch {}
 }
 
@@ -117,14 +143,14 @@ function showDashboard(scan) {
   renderDashboard(scan);
 }
 
-// ── Render upload history (on upload screen) ──────────────────────
+// ── Upload screen history ─────────────────────────────────────────
 function renderUploadHistory() {
   const section = document.getElementById('upload-history-section');
   const list    = document.getElementById('upload-history-list');
   if (scans.length === 0) { section.style.display = 'none'; return; }
   section.style.display = '';
   list.innerHTML = scans.slice().reverse().map(scan => {
-    const d = scan.data;
+    const d      = scan.data;
     const faults = d.totalFaults;
     const badgeCls = faults === 0 ? 'ok' : faults <= 3 ? 'warn' : 'danger';
     const badgeTxt = faults === 0 ? 'Sem falhas' : `${faults} falha${faults > 1 ? 's' : ''}`;
@@ -132,7 +158,7 @@ function renderUploadHistory() {
       <div class="upload-history-item" onclick="selectAndShow('${scan.id}')">
         <div>
           <div class="scan-name">${esc(scan.filename)}</div>
-          <div class="scan-meta">${d.scanDate}  ·  ${d.mileage ? d.mileage.toLocaleString('pt-BR') + ' km' : '-'}</div>
+          <div class="scan-meta">${d.scanDate} · ${d.mileage ? d.mileage.toLocaleString('pt-BR') + ' km' : '–'}</div>
         </div>
         <span class="scan-badge ${badgeCls}">${badgeTxt}</span>
       </div>`;
@@ -144,17 +170,91 @@ function selectAndShow(id) {
   showDashboard(getActiveScan());
 }
 
+// ================================================================
+//  COMPARISON ENGINE
+// ================================================================
+
+/**
+ * Returns the most recent scan that occurred BEFORE the given scan.
+ * Used as the reference baseline for comparison.
+ */
+function getPreviousScan(currentScan) {
+  return scans
+    .filter(s => s.id !== currentScan.id && s.data.scanTimestamp < currentScan.data.scanTimestamp)
+    .sort((a, b) => b.data.scanTimestamp - a.data.scanTimestamp)[0] || null;
+}
+
+/**
+ * Flatten all faults from a scan's data into a single list,
+ * each augmented with moduleAddr and moduleName.
+ */
+function getAllFaults(data) {
+  const list = [];
+  for (const mod of data.modules) {
+    for (const f of mod.faults) {
+      list.push({ ...f, moduleName: mod.name, moduleAddr: mod.address });
+    }
+  }
+  return list;
+}
+
+/**
+ * Unique key for a fault: address + numeric VAG code.
+ * pCode is derived from the numeric code so the numeric one is sufficient.
+ */
+function faultKey(f) {
+  return `${f.moduleAddr}:${f.code}`;
+}
+
+/**
+ * Build comparison object between current and previous scan.
+ * Returns null if no previous scan exists.
+ */
+function getComparison(currentScan) {
+  const prev = getPreviousScan(currentScan);
+  if (!prev) return null;
+
+  const currFaults = getAllFaults(currentScan.data);
+  const prevFaults = getAllFaults(prev.data);
+
+  const currKeys = new Set(currFaults.map(faultKey));
+  const prevKeys = new Set(prevFaults.map(faultKey));
+
+  // Module status changes
+  const moduleChanges = [];
+  for (const cm of currentScan.data.modules) {
+    const pm = prev.data.modules.find(m => m.address === cm.address);
+    if (pm && pm.status !== cm.status) {
+      moduleChanges.push({
+        address: cm.address,
+        name:    cm.name,
+        from:    pm.status,
+        to:      cm.status
+      });
+    }
+  }
+
+  return {
+    previousScan:     prev,
+    newFaults:        currFaults.filter(f => !prevKeys.has(faultKey(f))),
+    resolvedFaults:   prevFaults.filter(f => !currKeys.has(faultKey(f))),
+    recurringFaults:  currFaults.filter(f =>  prevKeys.has(faultKey(f))),
+    moduleChanges
+  };
+}
+
 // ── Main render ───────────────────────────────────────────────────
 function renderDashboard(scan) {
-  const d = scan.data;
+  const d   = scan.data;
+  const cmp = getComparison(scan);   // null if no previous scan
 
-  // Nav
-  document.getElementById('nav-vin').textContent    = d.vin || '';
-  document.getElementById('nav-date').textContent   = d.scanDate;
-  document.getElementById('nav-km').textContent     = d.mileage ? d.mileage.toLocaleString('pt-BR') + ' km' : '';
+  // Nav bar
+  document.getElementById('nav-vin').textContent  = d.vin || '';
+  document.getElementById('nav-date').textContent = d.scanDate;
+  document.getElementById('nav-km').textContent   = d.mileage ? d.mileage.toLocaleString('pt-BR') + ' km' : '';
   document.getElementById('history-count').textContent = scans.length;
 
-  // Stats
+  // Stat cards
   const ok          = d.modules.filter(m => m.status === 'OK').length;
   const malfunction = d.modules.filter(m => m.status === 'Malfunction').length;
   const unreachable = d.modules.filter(m => m.status === 'Cannot be reached').length;
@@ -164,30 +264,52 @@ function renderDashboard(scan) {
   setNum('stat-unreachable',  unreachable);
   setNum('stat-faults',       d.totalFaults);
 
-  // Car info
+  // Sections
   renderCarInfo(d);
-
-  // Charts
+  renderComparisonBanner(cmp);
   renderChartModules(ok, malfunction, unreachable, d.modules.length);
   renderChartFaultsBar(d);
   renderChartTimeline();
+  renderModulesGrid(d, cmp);
+  renderFaultsList(d, cmp);
+}
 
-  // Modules grid
-  renderModulesGrid(d);
+// ── Comparison banner ─────────────────────────────────────────────
+function renderComparisonBanner(cmp) {
+  const banner = document.getElementById('comparison-banner');
+  if (!cmp) { banner.classList.add('hidden'); return; }
 
-  // Faults list
-  renderFaultsList(d);
+  banner.classList.remove('hidden');
+
+  const prev = cmp.previousScan.data;
+  document.getElementById('cmp-prev-info').textContent =
+    `vs. ${prev.scanDate}${prev.mileage ? ' · ' + prev.mileage.toLocaleString('pt-BR') + ' km' : ''}`;
+
+  const nNew       = cmp.newFaults.length;
+  const nResolved  = cmp.resolvedFaults.length;
+  const nRecurring = cmp.recurringFaults.length;
+
+  const elNew  = document.getElementById('cmp-delta-new');
+  const elRes  = document.getElementById('cmp-delta-resolved');
+  const elRec  = document.getElementById('cmp-delta-recurring');
+
+  elNew.classList.toggle('hidden', nNew === 0);
+  elRes.classList.toggle('hidden', nResolved === 0);
+  elRec.classList.toggle('hidden', nRecurring === 0);
+
+  document.getElementById('cmp-n-new').textContent      = nNew;
+  document.getElementById('cmp-n-resolved').textContent = nResolved;
+  document.getElementById('cmp-n-recurring').textContent= nRecurring;
 }
 
 // ── Car info ──────────────────────────────────────────────────────
 function renderCarInfo(d) {
-  const chassis = d.chassisType || '–';
   const rows = [
-    ['VIN',            d.vin        || '–'],
-    ['Quilometragem',  d.mileage    ? d.mileage.toLocaleString('pt-BR') + ' km' : '–'],
-    ['Chassis',        chassis],
-    ['Data do scan',   d.scanDate   || '–'],
-    ['VCDS',           d.vcdsVersion|| '–'],
+    ['VIN',              d.vin         || '–'],
+    ['Quilometragem',    d.mileage     ? d.mileage.toLocaleString('pt-BR') + ' km' : '–'],
+    ['Chassis',          d.chassisType || '–'],
+    ['Data do scan',     d.scanDate    || '–'],
+    ['VCDS',             d.vcdsVersion || '–'],
     ['Módulos scaneados', d.modules.length.toString()],
   ];
   document.getElementById('car-info-table').innerHTML = rows.map(([k, v]) =>
@@ -222,10 +344,7 @@ function renderChartModules(ok, malfunction, unreachable, total) {
           labels: {
             color: '#8b8faa',
             font: { family: 'Inter', size: 12 },
-            padding: 16,
-            boxWidth: 12,
-            boxHeight: 12,
-            borderRadius: 3
+            padding: 16, boxWidth: 12, boxHeight: 12, borderRadius: 3
           }
         },
         tooltip: tooltipDefaults()
@@ -233,7 +352,6 @@ function renderChartModules(ok, malfunction, unreachable, total) {
     }
   });
 
-  // Center label
   const center = document.getElementById('donut-center');
   center.innerHTML = `<span class="dc-num">${total}</span><span class="dc-lbl">módulos</span>`;
 }
@@ -266,10 +384,7 @@ function renderChartFaultsBar(d) {
     },
     options: {
       indexAxis: 'y',
-      plugins: {
-        legend: { display: false },
-        tooltip: tooltipDefaults()
-      },
+      plugins: { legend: { display: false }, tooltip: tooltipDefaults() },
       scales: {
         x: {
           ticks: { color: '#8b8faa', font: { family: 'Inter', size: 11 }, stepSize: 1 },
@@ -286,7 +401,7 @@ function renderChartFaultsBar(d) {
   });
 }
 
-// ── Chart: timeline (2+ scans) ────────────────────────────────────
+// ── Chart: fault timeline (2+ scans) ─────────────────────────────
 function renderChartTimeline() {
   if (chartTimeline) { chartTimeline.destroy(); chartTimeline = null; }
   const card = document.getElementById('card-timeline');
@@ -310,7 +425,10 @@ function renderChartTimeline() {
         backgroundColor: 'rgba(91,142,248,0.08)',
         fill: true,
         tension: 0.4,
-        pointBackgroundColor: '#5b8ef8',
+        pointBackgroundColor: values.map((v, i) => {
+          if (i === 0) return '#5b8ef8';
+          return v > values[i - 1] ? '#ef4444' : v < values[i - 1] ? '#22d3a0' : '#5b8ef8';
+        }),
         pointBorderColor: '#0d0d1a',
         pointBorderWidth: 2,
         pointRadius: 5,
@@ -323,7 +441,7 @@ function renderChartTimeline() {
         tooltip: {
           ...tooltipDefaults(),
           callbacks: {
-            afterLabel: (ctx2) => `Km: ${(kms[ctx2.dataIndex] || 0).toLocaleString('pt-BR')}`
+            afterLabel: ctx2 => `Km: ${(kms[ctx2.dataIndex] || 0).toLocaleString('pt-BR')}`
           }
         }
       },
@@ -344,16 +462,40 @@ function renderChartTimeline() {
 }
 
 // ── Modules grid ──────────────────────────────────────────────────
-function renderModulesGrid(d) {
+function renderModulesGrid(d, cmp) {
   const grid = document.getElementById('modules-grid');
+
+  // Build a map of module status changes for quick lookup
+  const changedAddr = new Map();   // address → { from, to }
+  if (cmp) {
+    for (const ch of cmp.moduleChanges) changedAddr.set(ch.address, ch);
+  }
+
   grid.innerHTML = d.modules.map(m => {
     const isOk   = m.status === 'OK';
     const isWarn = m.status === 'Malfunction';
     const cls    = isOk ? 'ok-card' : isWarn ? 'warn-card' : 'muted-card';
     const dot    = isOk ? 'ok' : isWarn ? 'warn' : 'muted';
+
     const faultBadge = m.faults.length > 0
       ? `<span class="module-fault-count">⚑ ${m.faults.length} falha${m.faults.length > 1 ? 's' : ''}</span>`
       : '';
+
+    // Status change badge
+    let changeBadge = '';
+    const ch = changedAddr.get(m.address);
+    if (ch) {
+      const wasOk  = ch.from === 'OK';
+      const nowOk  = ch.to   === 'OK';
+      if (wasOk && !nowOk) {
+        changeBadge = `<span class="module-change-badge worse">↓ Piorou</span>`;
+      } else if (!wasOk && nowOk) {
+        changeBadge = `<span class="module-change-badge better">↑ Melhorou</span>`;
+      } else {
+        changeBadge = `<span class="module-change-badge changed">~ Mudou</span>`;
+      }
+    }
+
     return `
       <div class="module-card ${cls}">
         <div class="module-top">
@@ -362,24 +504,37 @@ function renderModulesGrid(d) {
         </div>
         <div class="module-name">${esc(m.name)}</div>
         ${faultBadge}
+        ${changeBadge}
       </div>`;
   }).join('');
 }
 
 // ── Faults list ───────────────────────────────────────────────────
-function renderFaultsList(d) {
+function renderFaultsList(d, cmp) {
   const list  = document.getElementById('faults-list');
   const badge = document.getElementById('faults-count-badge');
 
-  const allFaults = [];
-  for (const mod of d.modules) {
-    for (const f of mod.faults) allFaults.push({ ...f, moduleName: mod.name, moduleAddr: mod.address });
+  const allFaults = getAllFaults(d);
+
+  // Tag each current fault with its delta status
+  if (cmp) {
+    const newKeys       = new Set(cmp.newFaults.map(faultKey));
+    const recurringKeys = new Set(cmp.recurringFaults.map(faultKey));
+    for (const f of allFaults) {
+      const k = faultKey(f);
+      f._delta = newKeys.has(k) ? 'new' : recurringKeys.has(k) ? 'recurring' : null;
+    }
+    // Sort: new first, then recurring, then untagged
+    allFaults.sort((a, b) => {
+      const rank = { new: 0, recurring: 1, null: 2 };
+      return (rank[a._delta] ?? 2) - (rank[b._delta] ?? 2);
+    });
   }
 
-  badge.textContent = allFaults.length > 0 ? allFaults.length : '';
+  badge.textContent  = allFaults.length > 0 ? allFaults.length : '';
   badge.style.display = allFaults.length > 0 ? '' : 'none';
 
-  if (allFaults.length === 0) {
+  if (allFaults.length === 0 && (!cmp || cmp.resolvedFaults.length === 0)) {
     list.innerHTML = `
       <div class="no-faults">
         <div class="no-faults-icon">✓</div>
@@ -388,55 +543,92 @@ function renderFaultsList(d) {
     return;
   }
 
-  list.innerHTML = allFaults.map((f, i) => {
-    const hasFreezeFrame = Object.keys(f.freezeFrame).length > 0;
-    const pcodeBadge = f.pCode ? `<span class="fault-pcode">${esc(f.pCode)}</span>` : '';
-    const detailLine = f.detail ? `<div class="fault-detail">${esc(f.detail)}</div>` : '';
-    const ffRows = hasFreezeFrame
-      ? Object.entries(f.freezeFrame).map(([k, v]) =>
-          `<div class="freeze-row"><span>${esc(k)}</span><span>${esc(v)}</span></div>`
-        ).join('') : '';
+  // Render current faults
+  let html = allFaults.map((f, i) => renderFaultItem(f, i, f._delta)).join('');
 
-    const freezeBlock = hasFreezeFrame ? `
-      <div class="fault-body">
-        <div class="freeze-frame-title">Freeze Frame</div>
-        <div class="freeze-table">${ffRows}</div>
-      </div>` : '';
+  // Render resolved faults (were in previous scan, gone now)
+  if (cmp && cmp.resolvedFaults.length > 0) {
+    html += `<div class="resolved-section-title">
+      <span class="resolved-icon">✓</span>
+      Resolvidas desde o scan anterior
+    </div>`;
+    html += cmp.resolvedFaults.map((f, i) =>
+      renderFaultItem(f, allFaults.length + i, 'resolved')
+    ).join('');
+  }
 
-    const metaKm   = f.mileage ? `<span class="fault-meta-item">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        ${esc(f.mileage)}</span>` : '';
-    const metaDate = f.date ? `<span class="fault-meta-item">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        ${esc(f.date)}</span>` : '';
-    const metaMod  = `<span class="fault-meta-item">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-        ${esc(f.moduleAddr)} – ${esc(f.moduleName)}</span>`;
+  list.innerHTML = html;
+}
 
-    const toggleBtn = hasFreezeFrame ? `
-      <div class="fault-toggle">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <polyline points="6 9 12 15 18 9"/>
-        </svg>
-      </div>` : '';
+function renderFaultItem(f, i, delta) {
+  const hasFreezeFrame = Object.keys(f.freezeFrame || {}).length > 0;
 
-    return `
-      <div class="fault-item" id="fault-${i}">
-        <div class="fault-header" ${hasFreezeFrame ? `onclick="toggleFault('fault-${i}')"` : ''}>
-          <div class="fault-codes">
-            <span class="fault-id">${esc(f.code)}</span>
-            ${pcodeBadge}
-          </div>
-          <div class="fault-info">
-            <div class="fault-desc">${esc(f.description)}</div>
-            ${detailLine}
-            <div class="fault-meta">${metaMod}${metaKm}${metaDate}</div>
-          </div>
-          ${toggleBtn}
+  const pcodeBadge = f.pCode
+    ? `<span class="fault-pcode">${esc(f.pCode)}</span>` : '';
+  const detailLine = f.detail
+    ? `<div class="fault-detail">${esc(f.detail)}</div>` : '';
+
+  // Delta badge
+  let deltaBadge = '';
+  if (delta === 'new')       deltaBadge = `<span class="fault-delta new">Nova</span>`;
+  else if (delta === 'recurring') deltaBadge = `<span class="fault-delta recurring">Recorrente</span>`;
+  else if (delta === 'resolved')  deltaBadge = `<span class="fault-delta resolved">Resolvida</span>`;
+
+  // Frequency badge (if > 1)
+  const freqBadge = (f.frequency > 0)
+    ? `<span class="fault-freq" title="Frequência de ocorrência">${f.frequency}×</span>` : '';
+
+  // Freeze frame rows
+  const ffRows = hasFreezeFrame
+    ? Object.entries(f.freezeFrame).map(([k, v]) =>
+        `<div class="freeze-row"><span>${esc(k)}</span><span>${esc(v)}</span></div>`
+      ).join('') : '';
+
+  const freezeBlock = hasFreezeFrame ? `
+    <div class="fault-body">
+      <div class="freeze-frame-title">Freeze Frame</div>
+      <div class="freeze-table">${ffRows}</div>
+    </div>` : '';
+
+  const metaKm  = f.mileage ? `<span class="fault-meta-item">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      ${esc(f.mileage)}</span>` : '';
+  const metaDate = f.date ? `<span class="fault-meta-item">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      ${esc(f.date)}</span>` : '';
+  const metaMod = `<span class="fault-meta-item">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      ${esc(f.moduleAddr)} – ${esc(f.moduleName)}</span>`;
+
+  const toggleBtn = hasFreezeFrame ? `
+    <div class="fault-toggle">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <polyline points="6 9 12 15 18 9"/>
+      </svg>
+    </div>` : '';
+
+  const isResolved = delta === 'resolved';
+
+  return `
+    <div class="fault-item${isResolved ? ' resolved' : ''}" id="fault-${i}">
+      <div class="fault-header" ${hasFreezeFrame ? `onclick="toggleFault('fault-${i}')"` : ''}>
+        <div class="fault-codes">
+          <span class="fault-id">${esc(f.code)}</span>
+          ${pcodeBadge}
+          ${freqBadge}
         </div>
-        ${freezeBlock}
-      </div>`;
-  }).join('');
+        <div class="fault-info">
+          <div class="fault-desc-row">
+            <span class="fault-desc">${esc(f.description)}</span>
+            ${deltaBadge}
+          </div>
+          ${detailLine}
+          <div class="fault-meta">${metaMod}${metaKm}${metaDate}</div>
+        </div>
+        ${toggleBtn}
+      </div>
+      ${freezeBlock}
+    </div>`;
 }
 
 function toggleFault(id) {
@@ -461,16 +653,19 @@ function renderHistoryDrawer() {
     list.innerHTML = `<p style="color:var(--text2);font-size:.85rem;text-align:center;padding:24px">Nenhum scan salvo.</p>`;
     return;
   }
-  list.innerHTML = scans.slice().reverse().map(scan => {
-    const d     = scan.data;
+  // Sort newest first
+  const sorted = scans.slice().sort((a, b) => b.data.scanTimestamp - a.data.scanTimestamp);
+  list.innerHTML = sorted.map(scan => {
+    const d      = scan.data;
     const faults = d.totalFaults;
     const active = scan.id === activeScanId ? 'active' : '';
     const fCls   = faults === 0 ? 'none' : 'some';
     const fTxt   = faults === 0 ? 'Sem falhas' : `${faults} falha${faults > 1 ? 's' : ''}`;
+    const km     = d.mileage ? d.mileage.toLocaleString('pt-BR') + ' km' : '–';
     return `
       <div class="drawer-scan-item ${active}" onclick="selectScan('${scan.id}')">
-        <div class="dsi-name">${esc(scan.filename)}</div>
-        <div class="dsi-meta">${d.scanDate} · ${d.mileage ? d.mileage.toLocaleString('pt-BR') + ' km' : '–'}</div>
+        <div class="dsi-name" title="${esc(scan.filename)}">${esc(scan.filename)}</div>
+        <div class="dsi-meta">${d.scanDate} · ${km}</div>
         <div class="dsi-footer">
           <span class="dsi-faults ${fCls}">${fTxt}</span>
           <button class="dsi-del" onclick="event.stopPropagation(); deleteScan('${scan.id}')">Remover</button>
@@ -485,6 +680,20 @@ function selectScan(id) {
   showDashboard(getActiveScan());
 }
 
+// ── Toast notifications ───────────────────────────────────────────
+function showToast(msg, type = 'ok') {
+  let toast = document.getElementById('toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'toast';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.className   = `toast toast-${type} show`;
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => toast.classList.remove('show'), 3000);
+}
+
 // ── Chart defaults ────────────────────────────────────────────────
 function tooltipDefaults() {
   return {
@@ -496,7 +705,7 @@ function tooltipDefaults() {
     padding: 12,
     cornerRadius: 8,
     titleFont: { family: 'Inter', size: 13, weight: '600' },
-    bodyFont: { family: 'Inter', size: 12 }
+    bodyFont:  { family: 'Inter', size: 12 }
   };
 }
 

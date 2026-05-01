@@ -114,6 +114,31 @@
       </div>
     </section>
 
+    <!-- Comparison banner (shows only when 2+ scans exist) -->
+    <div id="comparison-banner" class="comparison-banner hidden">
+      <div class="cmp-info">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;color:var(--blue)">
+          <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
+          <polyline points="17 6 23 6 23 12"/>
+        </svg>
+        <div>
+          <div class="cmp-label">Comparando com scan anterior</div>
+          <div class="cmp-prev" id="cmp-prev-info"></div>
+        </div>
+      </div>
+      <div class="cmp-deltas">
+        <span class="cmp-delta new"       id="cmp-delta-new">
+          <span id="cmp-n-new">0</span> nova(s)
+        </span>
+        <span class="cmp-delta resolved"  id="cmp-delta-resolved">
+          <span id="cmp-n-resolved">0</span> resolvida(s)
+        </span>
+        <span class="cmp-delta recurring" id="cmp-delta-recurring">
+          <span id="cmp-n-recurring">0</span> recorrente(s)
+        </span>
+      </div>
+    </div>
+
     <!-- Charts row -->
     <section class="grid-2">
       <div class="card">
@@ -129,7 +154,7 @@
       </div>
     </section>
 
-    <!-- Faults per module -->
+    <!-- Faults per module bar -->
     <div class="card" id="card-faults-bar" style="display:none">
       <div class="card-title">Falhas por Módulo</div>
       <div class="chart-wrap bar-wrap">
@@ -153,7 +178,10 @@
 
     <!-- Faults list -->
     <div class="card" id="card-faults-list">
-      <div class="card-title">Falhas Detectadas <span class="title-badge" id="faults-count-badge"></span></div>
+      <div class="card-title">
+        Falhas Detectadas
+        <span class="title-badge" id="faults-count-badge"></span>
+      </div>
       <div id="faults-list" class="faults-list"></div>
     </div>
 
