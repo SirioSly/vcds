@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "id": "scan_1777678569380_uyiz3",
+    "filename": "jetta01-05-26.txt",
+    "importedAt": 1777678569380,
+    "scanDate": "01 May 2026",
+    "scanTimestamp": 1777645702000,
+    "mileage": 133430,
+    "totalFaults": 17,
+    "vin": "3VWL96166DM088951"
+  }
+]
