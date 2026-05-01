@@ -39,37 +39,49 @@ function setupListeners() {
   const fileInputDash = document.getElementById('file-input-dash');
   const dropZone      = document.getElementById('drop-zone');
 
-  // Upload com senha
+  // Garante multiple via JS (backup ao atributo HTML)
+  fileInput.multiple     = true;
+  fileInputDash.multiple = true;
+
+  // Converte FileList para Array ANTES de resetar o input
+  // Evita que browsers descartem os File objects ao limpar o input
   fileInput.addEventListener('change', e => {
-    const files = e.target.files;
-    if (files && files.length > 0) handleFiles(files);
-    e.target.value = '';
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';          // reset para permitir re-selecionar o mesmo arquivo
+    if (files.length > 0) handleFiles(files);
   });
   fileInputDash.addEventListener('change', e => {
-    const files = e.target.files;
-    if (files && files.length > 0) handleFiles(files);
+    const files = Array.from(e.target.files || []);
     e.target.value = '';
+    if (files.length > 0) handleFiles(files);
   });
 
   document.getElementById('btn-upload-select').addEventListener('click', () =>
-    requireAuth(() => fileInput.click())
+    requireAuth(() => triggerInput(fileInput))
   );
   document.getElementById('btn-new-scan').addEventListener('click', () =>
-    requireAuth(() => fileInputDash.click())
+    requireAuth(() => triggerInput(fileInputDash))
   );
   document.getElementById('btn-open-history').addEventListener('click', openHistoryDrawer);
   document.getElementById('btn-back-from-status').addEventListener('click', backFromStatus);
 
   // Drag & drop (exige senha)
-  dropZone.addEventListener('click', () => requireAuth(() => fileInput.click()));
+  dropZone.addEventListener('click', () => requireAuth(() => triggerInput(fileInput)));
   dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
   dropZone.addEventListener('dragleave',    () => dropZone.classList.remove('drag-over'));
   dropZone.addEventListener('drop', e => {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
-    const files = [...(e.dataTransfer.files || [])].filter(f => f.name.toLowerCase().endsWith('.txt'));
+    const files = Array.from(e.dataTransfer.files || []).filter(f => f.name.toLowerCase().endsWith('.txt'));
     if (files.length > 0) requireAuth(() => handleFiles(files));
   });
+}
+
+/** Abre o seletor de arquivos com pequeno delay para garantir que
+ *  qualquer overlay/modal já fechou antes do diálogo abrir. */
+function triggerInput(inputEl) {
+  inputEl.multiple = true;       // reforça antes de abrir
+  setTimeout(() => inputEl.click(), 60);
 }
 
 // ================================================================
@@ -121,7 +133,8 @@ function confirmPassword() {
 // ================================================================
 
 async function handleFiles(fileList) {
-  const files = [...fileList].filter(f => f.name.toLowerCase().endsWith('.txt'));
+  // Aceita FileList, Array de Files, ou array já filtrado
+  const files = Array.from(fileList).filter(f => f.name.toLowerCase().endsWith('.txt'));
   if (files.length === 0) return;
 
   let imported = 0;
