@@ -8,5 +8,15 @@
     "mileage": 133430,
     "totalFaults": 17,
     "vin": "3VWL96166DM088951"
+  },
+  {
+    "id": "scan_1777679492505_7d5oi",
+    "filename": "jetta05-12-25.txt",
+    "importedAt": 1777679492505,
+    "scanDate": "05 December 2025",
+    "scanTimestamp": 1764976574000,
+    "mileage": 129300,
+    "totalFaults": 21,
+    "vin": "3VWL96166DM088951"
   }
 ]
