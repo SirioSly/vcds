@@ -1,3 +1,18 @@
 {
-  "cars": []
+  "cars": [
+    {
+      "id": "car_1777678551461_78acv",
+      "clientName": "Leonardo Sirio",
+      "make": "Volkswagen",
+      "model": "Jetta TSI 2.0",
+      "year": 2013,
+      "vin": "",
+      "stage": "Stage 3",
+      "notes": "My car",
+      "createdAt": 1777678551461,
+      "scanCount": 0,
+      "lastScanDate": null,
+      "lastFaults": null
+    }
+  ]
 }
