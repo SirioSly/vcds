@@ -10,9 +10,9 @@
       "stage": "Stage 3",
       "notes": "My car",
       "createdAt": 1777678551461,
-      "scanCount": 0,
-      "lastScanDate": null,
-      "lastFaults": null
+      "scanCount": 2,
+      "lastScanDate": "05 December 2025",
+      "lastFaults": 21
     }
   ]
 }
