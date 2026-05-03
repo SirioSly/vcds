@@ -43,17 +43,11 @@
         </svg>
       </div>
       <h1 class="brand-title">VCDS Mechanic Dashboard</h1>
-      <p class="brand-subtitle">Conecte ao seu repositório GitHub para começar</p>
+      <p class="brand-subtitle">Histórico de diagnósticos VCDS — acesso público, sem login</p>
     </div>
 
     <div class="config-card">
       <div class="card-title">Configuração do GitHub</div>
-
-      <div class="cfg-field">
-        <label class="cfg-label">GitHub Personal Access Token</label>
-        <input type="password" id="cfg-token" class="cfg-input" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" autocomplete="off">
-        <small class="cfg-hint">Precisa de permissão <code>repo</code> (leitura e escrita)</small>
-      </div>
 
       <div class="cfg-row">
         <div class="cfg-field">
@@ -70,10 +64,16 @@
         </div>
       </div>
 
+      <div class="cfg-field" style="margin-top:8px">
+        <label class="cfg-label">Token do GitHub <span style="font-weight:400;color:var(--text2)">(opcional — necessário para adicionar scans e mods)</span></label>
+        <input type="password" id="cfg-token" class="cfg-input" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx  •  deixe em branco para só visualizar" autocomplete="off">
+        <small class="cfg-hint">Com token: permissão <code>repo</code>. Sem token: acesso somente leitura ao histórico público.</small>
+      </div>
+
       <p class="cfg-error hidden" id="cfg-error"></p>
 
       <button class="btn-primary" style="width:100%;margin-top:8px" id="btn-save-config">
-        Salvar e Conectar
+        Conectar
       </button>
     </div>
   </div>

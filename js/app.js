@@ -26,33 +26,39 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadConfig();
   setupListeners();
 
-  // Se não há config local, tenta buscar data/config.json do repo
-  // (salvo lá automaticamente ao configurar em qualquer dispositivo)
-  if (!ghConfig?.token) {
+  // Tenta buscar data/config.json do repo (contém owner/repo/branch — SEM token)
+  // Isso permite acesso anônimo: qualquer pessoa abre e vê o histórico completo.
+  // O token fica só no localStorage do dono e só é necessário para gravar.
+  if (!ghConfig?.owner || !ghConfig?.repo) {
     try {
       const r = await fetch('./data/config.json?_=' + Date.now());
       if (r.ok) {
         const remote = await r.json();
-        if (remote?.token && remote?.owner && remote?.repo) {
-          saveConfig(remote);   // salva no localStorage deste dispositivo
+        if (remote?.owner && remote?.repo) {
+          saveConfig({
+            owner:  remote.owner,
+            repo:   remote.repo,
+            branch: remote.branch || 'main',
+            token:  ghConfig?.token || null   // preserva token local se existir
+          });
         }
       }
-    } catch { /* sem config remota ainda — segue normal */ }
+    } catch { /* sem config remota ainda */ }
   }
 
-  if (!ghConfig?.token) {
-    showConfigScreen();
-    return;
-  }
-
-  showLoading('Carregando carros...');
-  try {
-    await loadCars();
-    hideLoading();
-    showCarsScreen();
-  } catch(err) {
-    hideLoading();
-    showToast('Erro ao conectar ao GitHub: ' + err.message, 'error');
+  // Leitura funciona sem token (repo público). Só exige config se owner/repo ausentes.
+  if (ghConfig?.owner && ghConfig?.repo) {
+    showLoading('Carregando carros...');
+    try {
+      await loadCars();
+      hideLoading();
+      showCarsScreen();
+    } catch(err) {
+      hideLoading();
+      showToast('Erro ao conectar ao GitHub: ' + err.message, 'error');
+      showConfigScreen();
+    }
+  } else {
     showConfigScreen();
   }
 });
@@ -75,6 +81,7 @@ function saveConfig(cfg) {
 // ================================================================
 
 async function ghGet(path) {
+  if (!ghConfig?.owner || !ghConfig?.repo) throw new Error('Repositório não configurado.');
   const { owner, repo, branch, token } = ghConfig;
   const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`;
   const headers = { 'Accept': 'application/vnd.github+json' };
@@ -97,6 +104,9 @@ async function ghGet(path) {
 }
 
 async function ghPut(path, data, message, existingSha) {
+  if (!ghConfig?.token) {
+    throw new Error('Token do GitHub necessário para gravar. Acesse ⚙ Configurações e informe seu token.');
+  }
   const { owner, repo, branch, token } = ghConfig;
   const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
   const headers = {
@@ -123,6 +133,37 @@ async function ghPut(path, data, message, existingSha) {
   }
   const json = await res.json();
   return json.content ? json.content.sha : null;
+}
+
+// Salva conteúdo de texto puro (ex: .txt) no GitHub (sem JSON.stringify)
+async function ghPutRaw(path, textContent, message) {
+  if (!ghConfig?.token) {
+    throw new Error('Token do GitHub necessário para gravar.');
+  }
+  const { owner, repo, branch, token } = ghConfig;
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+  const headers = {
+    'Accept': 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`
+  };
+
+  // Busca SHA existente (para update, se já existir)
+  let sha;
+  try {
+    const checkRes = await fetch(`${url}?ref=${branch}`, { headers });
+    if (checkRes.ok) { const j = await checkRes.json(); sha = j.sha; }
+  } catch { /* arquivo novo */ }
+
+  const content = btoa(unescape(encodeURIComponent(textContent)));
+  const body = { message, content, branch };
+  if (sha) body.sha = sha;
+
+  const res = await fetch(url, { method: 'PUT', headers, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.message || `HTTP ${res.status}`);
+  }
 }
 
 // ================================================================
@@ -196,42 +237,42 @@ async function handleSaveConfig() {
   errEl.textContent = '';
   errEl.classList.add('hidden');
 
-  if (!token) { showCfgError('O token do GitHub é obrigatório.'); return; }
-  if (!owner)  { showCfgError('O owner é obrigatório.'); return; }
-  if (!repo)   { showCfgError('O repositório é obrigatório.'); return; }
+  if (!owner) { showCfgError('O owner é obrigatório.'); return; }
+  if (!repo)  { showCfgError('O repositório é obrigatório.'); return; }
 
-  document.getElementById('btn-save-config').textContent = 'Conectando...';
-  document.getElementById('btn-save-config').disabled = true;
+  const btn = document.getElementById('btn-save-config');
+  btn.textContent = 'Conectando...';
+  btn.disabled = true;
 
-  // Validate token by calling the repo endpoint
+  // Valida conexão com o repositório (token opcional)
   try {
-    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/vnd.github+json'
-      }
-    });
-    if (res.status === 401) throw new Error('Token inválido ou sem permissão.');
+    const headers = { 'Accept': 'application/vnd.github+json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
     if (res.status === 404) throw new Error(`Repositório "${owner}/${repo}" não encontrado.`);
+    if (res.status === 401) throw new Error('Token inválido ou sem permissão.');
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.message || `HTTP ${res.status}`);
     }
   } catch(e) {
     showCfgError(e.message);
-    document.getElementById('btn-save-config').textContent = 'Salvar e Conectar';
-    document.getElementById('btn-save-config').disabled = false;
+    btn.textContent = 'Conectar';
+    btn.disabled = false;
     return;
   }
 
-  saveConfig({ token, owner, repo, branch });
+  // Salva config localmente (inclui token se fornecido)
+  saveConfig({ token: token || null, owner, repo, branch });
 
-  // Persiste config no GitHub para sincronizar outros dispositivos automaticamente
-  try {
-    await ghPut('data/config.json', { token, owner, repo, branch }, 'Save config (auto-sync devices)');
-  } catch(e) {
-    console.warn('Não foi possível salvar config no GitHub:', e.message);
-    // Não é fatal — o token local ainda funciona
+  // Persiste owner/repo/branch no GitHub para auto-sincronizar outros dispositivos.
+  // NUNCA grava o token no repositório.
+  if (token) {
+    try {
+      await ghPut('data/config.json', { owner, repo, branch }, 'Save connection config (auto-sync devices)');
+    } catch(e) {
+      console.warn('Não foi possível salvar config no GitHub:', e.message);
+    }
   }
 
   showLoading('Carregando carros...');
@@ -244,8 +285,8 @@ async function handleSaveConfig() {
     showCfgError('Erro ao carregar dados: ' + e.message);
   }
 
-  document.getElementById('btn-save-config').textContent = 'Salvar e Conectar';
-  document.getElementById('btn-save-config').disabled = false;
+  btn.textContent = 'Conectar';
+  btn.disabled = false;
 }
 
 function showCfgError(msg) {
@@ -261,9 +302,11 @@ function showCfgError(msg) {
 async function loadCars() {
   const result = await ghGet('data/index.json');
   if (!result) {
-    // First run — create empty index
     cars = [];
-    await ghPut('data/index.json', { cars: [] }, 'Initialize VCDS data store');
+    // Só inicializa no GitHub se tiver token (precisa de escrita)
+    if (ghConfig?.token) {
+      await ghPut('data/index.json', { cars: [] }, 'Initialize VCDS data store');
+    }
   } else {
     cars = result.data.cars || [];
   }
@@ -452,12 +495,27 @@ async function addScan(file) {
         const importedAt = Date.now();
         const scanObj = { id: scanId, filename: file.name, importedAt, data };
 
-        // Write full scan file
-        await ghPut(
-          `data/cars/${activeCarId}/scans/${scanId}.json`,
-          scanObj,
-          `Add scan ${file.name}`
-        );
+        // Grava JSON parseado + arquivo .txt original em paralelo
+        const savePromises = [
+          ghPut(
+            `data/cars/${activeCarId}/scans/${scanId}.json`,
+            scanObj,
+            `Add scan ${file.name}`
+          )
+        ];
+
+        // Salva o .txt bruto (máx ~900 KB para respeitar limite GitHub API)
+        if (raw.length < 900_000) {
+          savePromises.push(
+            ghPutRaw(
+              `data/cars/${activeCarId}/scans/raw/${scanId}.txt`,
+              raw,
+              `Add raw log ${file.name}`
+            ).catch(e => console.warn('Raw log não salvo:', e.message))
+          );
+        }
+
+        await Promise.all(savePromises);
 
         // Update scans index
         const scanIdxResult = await ghGet(`data/cars/${activeCarId}/scans/index.json`);
@@ -523,12 +581,10 @@ function _hideAllScreens() {
 
 function showConfigScreen() {
   _hideAllScreens();
-  if (ghConfig) {
-    document.getElementById('cfg-token').value  = ghConfig.token  || '';
-    document.getElementById('cfg-owner').value  = ghConfig.owner  || 'SirioSly';
-    document.getElementById('cfg-repo').value   = ghConfig.repo   || 'vcds';
-    document.getElementById('cfg-branch').value = ghConfig.branch || 'main';
-  }
+  document.getElementById('cfg-token').value  = ghConfig?.token  || '';
+  document.getElementById('cfg-owner').value  = ghConfig?.owner  || 'SirioSly';
+  document.getElementById('cfg-repo').value   = ghConfig?.repo   || 'vcds';
+  document.getElementById('cfg-branch').value = ghConfig?.branch || 'main';
   document.getElementById('config-screen').classList.remove('hidden');
 }
 
